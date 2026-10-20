@@ -44,6 +44,24 @@ def build(domain):
     return _index[domain]
 
 
+QUESTION_WORDS = {"what", "doe", "does", "do", "how", "is", "are", "the", "can", "could", "be", "an", "of", "for", "to",
+                  "in", "on", "we", "our", "you", "it", "thi", "that", "and", "or", "why", "when", "where", "which",
+                  "who", "mean", "tell", "me", "please", "there", "any", "about", "with", "should", "would", "will"}
+
+
+def sentences(query, passages, k=2, domain=None):
+    """The sentences in `passages` that best answer `query` (rare words count most), with sources.
+    A runner-up is kept only when it is at least half as relevant as the best sentence."""
+    _, idf, _ = _index.get(domain or domains.DEFAULT) or build(domain or domains.DEFAULT)
+    terms, scored = (set(_tokens(query)) - QUESTION_WORDS) & idf.keys(), []
+    for rank, p in enumerate(passages):
+        for s in re.split(r"(?<=[.!?])\s+", p["text"]):
+            if score := sum(idf[t] for t in terms & set(_tokens(s))):
+                scored.append((score - rank * 0.01, s.strip(), p["source"]))
+    scored.sort(key=lambda x: -x[0])
+    return [{"text": s, "source": src} for score, s, src in scored[:k] if score >= scored[0][0] / 2]
+
+
 def search(query, k=3, domain=None):
     domain = domain or domains.DEFAULT
     chunks, idf, avg = _index.get(domain) or build(domain)

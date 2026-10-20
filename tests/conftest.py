@@ -4,7 +4,8 @@ import tempfile
 import pytest
 
 os.environ["SANAR_DB"] = os.path.join(tempfile.mkdtemp(), "test.db")
-for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "TOWER_DOMAIN"):
+os.environ["SANAR_DOTENV"] = "0"  # a developer's .env (and API key) must never reach the tests
+for var in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "ANTHROPIC_MODEL", "ANTHROPIC_EFFORT", "TOWER_DOMAIN"):
     os.environ.pop(var, None)
 
 from app import db  # noqa: E402

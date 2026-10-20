@@ -123,20 +123,36 @@ _STOP = {"the", "and", "for", "from", "with", "into", "branch", "site", "facilit
 
 
 def _words(text):
-    return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in _STOP]
+    return [w for w in re.findall(r"[a-z0-9]+", text.lower()) if len(w) > 2 and w not in _STOP and not w.isdigit()]
 
 
 def _mentions(text, names, by_position=False):
-    """Keys whose id (3+ characters) or name words appear in `text`: best match first, or in order
-    of first mention when `by_position`."""
+    """Keys whose id (3+ characters, whole word) or name words (word starts, so plurals match) appear
+    in `text`: best match first, or in order of first mention when `by_position`."""
     low, found = text.lower(), []
     for key, name in names.items():
-        words = set(_words(name)) | ({key.lower()} if len(key) > 2 else set())
-        pos = [m.start() for w in words for m in re.finditer(rf"\b{re.escape(w)}", low)]
+        patterns = [rf"\b{re.escape(w)}" for w in set(_words(name))]
+        if len(key) > 2:
+            patterns.append(rf"\b{re.escape(key.lower())}\b")
+        pos = [m.start() for p in patterns for m in re.finditer(p, low)]
         if pos:
-            hits = sum(1 for w in words if re.search(rf"\b{re.escape(w)}", low))
-            found.append((min(pos), -hits / len(words), key) if by_position else (-hits / len(words), min(pos), key))
+            hits = sum(1 for p in patterns if re.search(p, low)) / len(patterns)
+            found.append((min(pos), -hits, key) if by_position else (-hits, min(pos), key))
     return [k for *_, k in sorted(found)]
+
+
+def _plural(word):
+    return word + ("es" if word.endswith(("s", "x", "ch", "sh")) else "s")
+
+
+HOW_IT_WORKS = (
+    "The tower first looks for surplus elsewhere in the network: a site can only give what it has beyond its own "
+    "forecast and safety buffer, earliest-expiry lots leave first, and only as much as the receiving site can use "
+    "before expiry. An internal transfer is preferred over a purchase order because transit takes hours and supplier "
+    "lead time takes days [sop_fefo_transfers.md]. Whatever the network cannot cover is ordered from the compliant "
+    "supplier with the lowest landed cost, or the fastest one when stock would run out first [policy_procurement.md]. "
+    "Every handling, trade and approval rule is checked in code before anything moves, and actions above the limits "
+    "wait for the right role to sign off.")
 
 
 def _resolve(net, text, kind):
@@ -378,16 +394,23 @@ def _rule_answer(net, question):
                     "every guardrail passes." + (f" Sign-off needed: {', '.join(r['signoff'])}." if r["signoff"] else ""))
         return (f"Not now. Moving {r['item']} from {r['from_name']} to {r['to_name']} is blocked: "
                 + "; ".join(c["detail"] + (f" [{c['ref']}]" if c["ref"] else "") for c in failed) + ".")
+    if not items and re.search(r"^(can|may|must|is it|are we|do we|does|what does|what is the (rule|policy))\b|"
+                               r"\b(allowed|permitted|rules?|policy|policies)\b", low) \
+            and not re.search(r"\b(show|list|which|how many|give)\b", low):
+        return None  # a question about the rules: answered from the policy documents
+    if not items and re.search(r"how (does|do|is|are) .*(plan|work|decid|choos)|\bwhy\b.*(transfer|order|move)|"
+                               r"instead of (order|buy)", low):
+        return HOW_IT_WORKS
     if re.search(r"expir|waste|rebalanc", low):
         props = planner.rebalance(net)
         watch = planner.expiry_watch(net)
-        lines = [f"{len(watch)} {lab['lot'].lower()}s are on the expiry watch."]
+        lines = [f"{len(watch)} {_plural(lab['lot'].lower())} are on the expiry watch."]
         lines += [f"Move {r['qty']:,} × {r['sku_name']} ({r['lot_no']}) {r['from_name']} → {r['to_name']} to save "
                   f"{net.domain.currency} {r['value_saved']:,.0f}." for r in props[:3]]
         return " ".join(lines)
     if re.search(r"recall|quarantin", low):
         held = planner.quarantine(net)
-        return (f"{len(held)} {lab['lot'].lower()}s are held: " + "; ".join(
+        return (f"{len(held)} {_plural(lab['lot'].lower())} are held: " + "; ".join(
             f"{q['lot_no']} {q['sku_name']} at {q['site_name']} ({q['qty']:,} units, {q['status']})" for q in held[:6])
             + "." if held else "Nothing is in quarantine.")
     if re.search(r"supplier|scorecard|otif|on.time|vendor|reliab", low):
@@ -410,6 +433,8 @@ def _rule_answer(net, question):
                 f"{got('waste_saved')['value']:,.0f} of waste prevented, {cur} {got('transport_saved')['value']:,.0f} "
                 f"saved by sharing trucks, {cur} {got('spend')['value']:,.0f} spent on orders. Last 30 days including "
                 f"sample history: {cur} {rep['totals']['spend']:,.0f} procurement spend.")
+    if text := _rule_explain_question(net, question, items, sites):
+        return text
     if items:
         sku = items[0]
         rows = [(sid, net.metrics(sku, sid)) for sid in (sites or net.sites) if (sku, sid) in net.positions]
@@ -426,11 +451,49 @@ def _rule_answer(net, question):
             f"{e['name']} ({e['kind']}) {e['start']} to {e['end']}, ×{e['factor']:g}, "
             + ("under way" if e["status"] == "active" else f"starts in {e['starts_in']} d" if e["status"] == "upcoming"
                else "past") for e in cal) + "." if cal else "The demand calendar is empty."
-    if re.search(r"alert|deficit|short|risk|critical|urgent|priorit", low):
-        al = planner.alerts(net)
-        return (f"{len(al)} open deficits. " + " ".join(
-            f"{a['severity']}: {a['sku_name']} at {a['site_name']}, short {a['need']:,} → {a['resolution']}."
-            for a in al[:4])) if al else "No open deficits."
+    if re.search(r"alert|deficit|short|risk|critical|urgent|priorit|what should|to.do|overview|summar|status|brief", low):
+        return _rule_briefing(net, planner.briefing_facts(net))
+    return None
+
+
+def _safety_text(net, sku, site):
+    m, d = net.metrics(sku, site), net.metrics(sku, site)["safety_detail"]
+    name = net.sites[site]["name"]
+    if d["mode"] != "smart":
+        return f"{name}: fixed buffer of {m['safety']:,}"
+    return (f"{name}: {m['safety']:,} units for {d['service_level']:g}% service (demand varies ±{d['demand_sd']:g}/day, "
+            f"{d['lead_days']:g} d to replenish" + (f" from {d['source']}" if d["source"] else "")
+            + f", lead-time spread {d['lead_sd']:g} d; the fixed buffer was {d['fixed']:,})")
+
+
+def _rule_explain_question(net, question, items, sites):
+    """Safety stock, forecast and 'why this plan' questions about the live network."""
+    low = question.lower()
+    sku = items[0] if items else None
+    held = [s for s in (sites or net.sites) if sku and (sku, s) in net.positions and net.metrics(sku, s)["forecast"]]
+    if re.search(r"safety|buffer|service level", low):
+        if not sku:
+            example = next(((a["sku"], a["site"]) for a in planner.alerts(net)), None)
+            return ("Safety stock is z × √(lead time × demand variance + demand² × lead-time variance): z comes from the "
+                    "service level (95%, or 99% for critical items), demand variance from the last 28 days with calendar "
+                    "effects removed, and lead time and its spread from the fastest compliant supplier's deliveries "
+                    "[policy_planning.md]." + (f" For example, {net.items[example[0]]['name']} at "
+                                               + _safety_text(net, *example) + "." if example else ""))
+        return f"Safety stock for {net.items[sku]['name']}: " + "; ".join(_safety_text(net, sku, s) for s in held) + "."
+    if sku and re.search(r"forecast|demand|expect|sell", low):
+        parts = []
+        for s in held:
+            m = net.metrics(sku, s)
+            lift = ", ".join(f"{u['name']} ×{u['factor']:g} from day {u['from_day']}" for u in m["uplifts"])
+            parts.append(f"{net.sites[s]['name']}: {m['forecast']:,} over the next 14 days (baseline {m['base_forecast']:,}"
+                         + (f"; {lift}" if lift else "") + ")")
+        return f"Forecast for {net.items[sku]['name']}: " + "; ".join(parts) + "."
+    if sku and re.search(r"\bwhy\b|how come|reason|decid|choos|instead", low):
+        site = next((s for s in (sites or net.sites) if (sku, s) in net.positions and net.metrics(sku, s)["balance"] < 0),
+                    None)
+        if not site:
+            return f"{net.items[sku]['name']} has no deficit at {net.sites[sites[0]]['name'] if sites else 'any site'}."
+        return f"{net.items[sku]['name']} at {net.sites[site]['name']}: " + _rule_explain(net, planner.plan(net, sku, site))
     return None
 
 
@@ -446,12 +509,14 @@ def answer(conn, question):
     net = Network(conn)
     passages = rag.search(question, k=3, domain=net.domain.name)
     if not llm_enabled():
-        text = _rule_answer(net, question)
-        if text:
-            text += " (No API key set: answered by the rules engine.)"
+        if text := _rule_answer(net, question):
+            text += " (Answered by the rules engine from live data; no AI model is connected.)"
+        elif hits := rag.sentences(question, passages, 2, net.domain.name):
+            text = (" ".join(f"{h['text']} [{h['source']}]" for h in hits)
+                    + " (Quoted from the policy documents; no AI model is connected.)")
         else:
-            text = ("No API key is set, so here are the most relevant policy excerpts instead of a written answer."
-                    if passages else "No API key is set and nothing in the knowledge base matched the question.")
+            text = ("Nothing in the live network or the policies matched that question. Try asking about an item, a "
+                    "site, suppliers, late shipments, safety stock, the calendar or what to do first.")
         return {"text": text, "sources": passages, "llm": False, "tools": []}
     messages = [{"role": "user", "content": f"QUESTION: {question}\n\nSITUATION NOW:\n{json.dumps(_situation(net))}"
                                             f"\n\nPOLICY EXCERPTS:\n{_context(passages)}"}]

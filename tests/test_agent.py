@@ -1,3 +1,4 @@
+import os
 from types import SimpleNamespace as NS
 
 from app import agent, planner
@@ -81,3 +82,32 @@ def test_fallback_marker_drops_the_declined_turn():
     blocks = [NS(type="thinking"), NS(type="tool_use"), NS(type="text"), NS(type="fallback"), NS(type="text"),
               NS(type="tool_use")]
     assert [b.type for b in agent._echo(blocks)] == ["text", "text", "tool_use"]
+
+
+def test_answers_without_a_model_are_written_not_excerpts(c):
+    ask = lambda q: agent.answer(c, q)["text"]  # noqa: E731
+    assert ask("Why does the tower transfer stock instead of ordering?").startswith("The tower first looks for surplus")
+    assert ask("Can expired stock be released?").startswith("Recalled and expired lots can never be released. "
+                                                            "[sop_recall_quarantine.md]")
+    assert ask("What is the safety stock for insulin?").startswith("Safety stock for Insulin glargine 100 IU/mL")
+    assert "Flu season ×1.3" in ask("What is the paracetamol forecast?")
+    assert ask("hello").startswith("Nothing in the live network or the policies matched")
+
+
+def test_item_ids_match_whole_words_only(c):
+    items = {k: v["name"] for k, v in Network(c).items.items()}
+    assert "INS" not in agent._mentions("transfer stock instead of ordering", items)  # "INS" is not "instead"
+    assert agent._mentions("send INS today", items)[0] == "INS"
+
+
+def test_env_file_fills_gaps_but_never_overrides(tmp_path, monkeypatch):
+    from app import load_env
+    env = tmp_path / ".env"
+    env.write_text("# comment\nSANAR_T1='from file'\nSANAR_T2=from file\nSANAR_T3=\n", encoding="utf-8")
+    monkeypatch.setenv("SANAR_T2", "real")
+    monkeypatch.delenv("SANAR_T1", raising=False)
+    monkeypatch.delenv("SANAR_DOTENV")
+    load_env(env)
+    assert (os.environ["SANAR_T1"], os.environ["SANAR_T2"]) == ("from file", "real")
+    assert "SANAR_T3" not in os.environ
+    monkeypatch.delenv("SANAR_T1")
