@@ -1,0 +1,235 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Sanar Control Tower</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap">
+<style>
+/* Layout: summary strip on top, then a work queue (left) beside the network view (right); stacks on phones. */
+:root{
+  --bg:#eef3f2; --panel:#fbfdfc; --ink:#10282b; --muted:#587075; --line:#d3dedc;
+  --accent:#0b6e6e; --accent-ink:#ffffff; --soft:#e0eceb;
+  --crit:#b3261e; --crit-bg:#fbe4e1; --warn:#8a5a00; --warn-bg:#fbefcf; --ok:#1c6b3c; --ok-bg:#dcf1e3; --cold:#1f5fa8; --cold-bg:#dfeafa;
+  --display:"Manrope","Segoe UI",sans-serif; --body:"IBM Plex Sans","Segoe UI",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
+  --bg:#0c1719; --panel:#132326; --ink:#e3eeed; --muted:#93aaad; --line:#27393c;
+  --accent:#4fc4bf; --accent-ink:#06201f; --soft:#1a2f32;
+  --crit:#ff9a90; --crit-bg:#4a1c18; --warn:#f2c661; --warn-bg:#40300a; --ok:#7fd6a0; --ok-bg:#143422; --cold:#8fbcf5; --cold-bg:#162c4a; color-scheme:dark}}
+:root[data-theme="dark"]{
+  --bg:#0c1719; --panel:#132326; --ink:#e3eeed; --muted:#93aaad; --line:#27393c;
+  --accent:#4fc4bf; --accent-ink:#06201f; --soft:#1a2f32;
+  --crit:#ff9a90; --crit-bg:#4a1c18; --warn:#f2c661; --warn-bg:#40300a; --ok:#7fd6a0; --ok-bg:#143422; --cold:#8fbcf5; --cold-bg:#162c4a; color-scheme:dark}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14px;line-height:1.45}
+.wrap{max-width:1240px;margin:0 auto;padding-inline:20px;padding-block:20px 40px;display:flex;flex-direction:column;gap:18px}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;justify-content:space-between}
+h1{font-family:var(--display);font-weight:800;font-size:24px;margin:0;letter-spacing:-.01em}
+h1 span{color:var(--accent)}
+.sub{color:var(--muted);font-size:13px;margin-top:2px}
+h2{font-family:var(--display);font-size:15px;font-weight:700;margin:0}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);margin:0 0 6px;font-weight:600}
+.pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;white-space:nowrap}
+.p-crit{background:var(--crit-bg);color:var(--crit)}.p-warn{background:var(--warn-bg);color:var(--warn)}
+.p-ok{background:var(--ok-bg);color:var(--ok)}.p-cold{background:var(--cold-bg);color:var(--cold)}.p-n{background:var(--soft);color:var(--muted)}
+.kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.kpi{background:var(--panel);padding:12px 16px}
+.kpi b{font-family:var(--display);font-size:26px;font-weight:700;display:block;font-variant-numeric:tabular-nums}
+.kpi small{color:var(--muted);font-size:12px}
+.grid{display:grid;grid-template-columns:minmax(0,1.05fr) minmax(0,1fr);gap:18px;align-items:start}
+.col{display:flex;flex-direction:column;gap:18px;min-width:0}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}
+.ph{display:flex;flex-wrap:wrap;gap:8px;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--line)}
+.pb{padding:14px 16px;display:flex;flex-direction:column;gap:14px}
+.alert{display:flex;gap:10px;align-items:center;width:100%;text-align:left;background:none;border:0;border-bottom:1px solid var(--line);padding:10px 16px;color:inherit;font:inherit;cursor:pointer}
+.alert:last-child{border-bottom:0}
+.alert:hover{background:var(--soft)}
+.alert[aria-current="true"]{background:var(--soft);box-shadow:inset 3px 0 0 var(--accent)}
+.alert .t{flex:1;min-width:0}.alert .t b{display:block;font-weight:600}.alert .t small{color:var(--muted)}
+.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+.formula{font-family:var(--mono);font-size:12.5px;background:var(--soft);border-radius:6px;padding:8px 10px;overflow-x:auto;white-space:nowrap}
+.tw{overflow-x:auto}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);font-weight:600;text-align:left;padding:6px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+tr:last-child td{border-bottom:0}
+td.r,th.r{text-align:right}
+ul{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:3px}
+.step{display:flex;flex-direction:column;gap:6px}
+.ticket{border:1px dashed var(--accent);border-radius:8px;padding:10px 12px;display:flex;flex-direction:column;gap:2px}
+.ticket b{font-family:var(--mono);font-weight:500;color:var(--accent)}
+.row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+button.btn{font:inherit;font-weight:600;border-radius:7px;padding:8px 14px;border:1px solid var(--line);background:var(--panel);color:var(--ink);cursor:pointer}
+button.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
+button.btn[aria-pressed="true"]{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
+button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+select{font:inherit;padding:5px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);max-width:100%}
+label.tog{display:flex;gap:6px;align-items:center;font-size:13px;color:var(--muted)}
+.log{font-family:var(--mono);font-size:12px;display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto}
+.log div{overflow-wrap:anywhere}.log span{color:var(--muted)}
+.empty{color:var(--muted);padding:18px 16px}
+.note{color:var(--muted);font-size:12px}
+@media (max-width:860px){.grid{grid-template-columns:minmax(0,1fr)}.kpis{grid-template-columns:repeat(2,1fr)}}
+</style></head><body>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>Sanar Pharmacy <span>Control Tower</span></h1>
+      <div class="sub">Autonomous pharmaceutical supply chain on linkzly.com · Semantic Layer + RAG + Opus 4.8 orchestration</div>
+    </div>
+    <span class="pill p-warn">Sample data</span>
+  </header>
+
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid">
+    <div class="col">
+      <section class="panel">
+        <div class="ph"><h2>Deficit alerts</h2>
+          <label class="tog"><input type="checkbox" id="auto"> Auto-execute routine actions</label></div>
+        <div id="alerts"></div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>Prescriptive action console</h2><span class="note">AI recommendation, one-click approval</span></div>
+        <div id="detail"></div>
+      </section>
+    </div>
+
+    <div class="col">
+      <section class="panel">
+        <div class="ph"><h2>Network inventory</h2><select id="sku" aria-label="Medicine"></select></div>
+        <div class="tw" id="net"></div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>Disruption simulation</h2><button class="btn" id="reset">Reset demo</button></div>
+        <div class="pb">
+          <div class="row">
+            <button class="btn" id="s-cold" aria-pressed="false">Cold-chain failure to Central</button>
+            <button class="btn" id="s-sup" aria-pressed="false">Primary supplier shortage</button>
+            <button class="btn" id="s-surge" aria-pressed="false">Seasonal flu surge +60%</button>
+          </div>
+          <div class="note">Switch a scenario on and the tower re-plans every open deficit against it.</div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>Expiry watch</h2><span class="note">Batches within 60 days</span></div>
+        <div class="tw" id="exp"></div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>In transit</h2><span class="note">Mark goods received to book them into stock</span></div>
+        <div class="tw" id="transit"></div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>Ask the tower</h2><span class="note">Answers from live stock and SOPs</span></div>
+        <div class="pb">
+          <form class="row" id="askf"><input id="q" style="flex:1;min-width:0;font:inherit;padding:7px 9px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink)" placeholder="e.g. Can insulin move from North to East?" aria-label="Question"><button class="btn primary">Ask</button></form>
+          <div id="ans" hidden></div>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>Activity log</h2></div>
+        <div class="pb"><div class="log" id="log"></div></div>
+      </section>
+    </div>
+  </div>
+  <div class="note">Quantities and compliance checks come from the planning engine; the language model writes the rationale and answers questions.</div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id), fmt = n => Math.round(n).toLocaleString('en-US');
+const esc = s => String(s).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'}[c]));
+let state = null, sel = null;
+
+async function api(path, method = 'GET', body) {
+  const r = await fetch('/api' + path, {method, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+
+async function refresh() {
+  if ($('auto').checked) await api('/auto-run', 'POST');
+  state = await api('/state');
+  const al = state.alerts, id = a => a.sku + '|' + a.branch;
+  if (!al.find(a => id(a) === sel)) sel = al[0] ? id(al[0]) : null;
+  if (!$('sku').options.length) $('sku').innerHTML = state.skus.map(s => `<option value="${s.id}">${esc(s.name)}</option>`).join('');
+  const k = state.kpis;
+  $('kpis').innerHTML = [[k.open_deficits, 'Open deficits'], [k.need_signoff, 'Need pharmacist sign-off'], [fmt(k.near_expiry_units), 'Units expiring in 60 days'], [k.actions_executed, 'Actions executed']]
+    .map(x => `<div class="kpi"><b>${x[0]}</b><small>${x[1]}</small></div>`).join('');
+  $('alerts').innerHTML = al.length ? al.map(a => `<button class="alert" data-id="${id(a)}" aria-current="${id(a) === sel}">
+    <span class="pill ${a.severity === 'Critical' ? 'p-crit' : a.severity === 'High' ? 'p-warn' : 'p-n'}">${a.severity}</span>
+    <span class="t"><b>${esc(a.sku_name)}</b><small>${esc(a.branch_name)} · short ${fmt(a.need)} units · clinical impact ${a.impact}/10</small></span>
+    ${a.cold ? '<span class="pill p-cold">2–8 °C</span>' : ''}${a.controlled ? '<span class="pill p-n">Controlled</span>' : ''}</button>`).join('')
+    : '<div class="empty">No open deficits. Every site covers its 14-day forecast plus safety buffer.</div>';
+  $('exp').innerHTML = state.expiry.length ? `<table><tr><th>Medicine</th><th>Site</th><th>Batch</th><th class="r">Units</th><th class="r">Expires in</th><th>FEFO rule</th></tr>` +
+    state.expiry.map(e => `<tr><td>${esc(e.sku_name)}</td><td>${esc(e.branch_name)}</td><td class="num">${esc(e.batch_no)}</td><td class="r num">${fmt(e.qty)}</td><td class="r num">${e.days} d</td>
+    <td><span class="pill ${e.excluded ? 'p-crit' : 'p-warn'}">${e.excluded ? 'Excluded from planning' : 'Dispense first'}</span></td></tr>`).join('') + '</table>'
+    : '<div class="empty">No batches within 60 days of expiry.</div>';
+  $('transit').innerHTML = state.open_actions.length ? `<table><tr><th>No.</th><th>Medicine</th><th>From</th><th>To</th><th class="r">Units</th><th></th></tr>` +
+    state.open_actions.map(a => `<tr><td class="num">${a.kind === 'po' ? 'PO' : 'TR'}-${a.id}</td><td>${esc(a.sku_name)}</td><td>${esc(a.from_name || a.supplier)}</td><td>${esc(a.to_name)}</td>
+    <td class="r num">${fmt(a.qty)}</td><td><button class="btn" data-recv="${a.id}">Mark received</button></td></tr>`).join('') + '</table>'
+    : '<div class="empty">Nothing in transit.</div>';
+  $('log').innerHTML = state.log.map(l => `<div><span>${esc(l.ts.slice(11))}</span> ${esc(l.msg)}</div>`).join('');
+  state.scenarios.forEach(s => { const b = $({cold_fail: 's-cold', supplier_short: 's-sup', surge: 's-surge'}[s.key]); if (b) b.setAttribute('aria-pressed', !!s.active); });
+  await Promise.all([renderNet(), renderDetail()]);
+}
+
+async function renderNet() {
+  const rows = await api('/inventory/' + $('sku').value);
+  $('net').innerHTML = `<table><tr><th>Site</th><th class="r">FEFO stock</th><th class="r">In transit</th><th class="r">14-day forecast</th><th class="r">Buffer</th><th class="r">Days on hand</th><th class="r">Earliest expiry</th><th>Status</th></tr>` +
+    rows.map(r => `<tr><td>${esc(r.branch_name)}</td><td class="r num">${fmt(r.fefo_stock)}</td><td class="r num">${fmt(r.in_transit)}</td><td class="r num">${fmt(r.forecast)}</td><td class="r num">${fmt(r.safety)}</td>
+    <td class="r num">${r.days_on_hand ?? '–'}</td><td class="r num">${r.earliest_days == null ? '–' : r.earliest_days + ' d'}</td>
+    <td><span class="pill ${r.balance < 0 ? 'p-crit' : r.balance > 0 ? 'p-ok' : 'p-n'}">${r.balance < 0 ? 'Deficit ' + fmt(-r.balance) : r.balance > 0 ? 'Surplus ' + fmt(r.balance) : 'Balanced'}</span></td></tr>`).join('') + '</table>';
+}
+
+async function renderDetail() {
+  const el = $('detail');
+  if (!sel) { el.innerHTML = '<div class="empty">Nothing waiting for a decision. Try a disruption scenario to see the tower re-plan.</div>'; return; }
+  const [sku, branch] = sel.split('|'), mine = sel;
+  const p = await api(`/alerts/${sku}/${branch}/plan`), m = p.metrics;
+  const eta = p.transfers.length ? Math.max(...p.transfers.map(t => t.hours)) : null;
+  el.innerHTML = `<div class="pb">
+   <div><h2>${esc(p.sku_name)} at ${esc(p.branch_name)}</h2><div class="note">Phase 1 · deficit identified</div></div>
+   <div class="formula">FEFO stock ${fmt(m.fefo_stock)} + in transit ${fmt(m.in_transit)} &lt; forecast ${fmt(m.forecast)} + buffer ${fmt(m.safety)} → short ${fmt(p.need)} units</div>
+   <div class="step"><h3>Step 1 · Network FEFO audit</h3><div class="tw"><table>
+     <tr><th>Site</th><th class="r">Surplus</th><th class="r">Shelf life</th><th class="r">Transit</th><th>Route</th><th>Result</th></tr>
+     ${p.audit.map(x => `<tr><td>${esc(x.branch_name)}</td><td class="r num">${fmt(x.surplus)}</td><td class="r num">${x.shelf_days} d</td><td class="r num">${x.hours} h</td>
+       <td><span class="pill ${x.route_ok ? 'p-ok' : 'p-crit'}">${p.cold ? (x.route_ok ? 'Reefer OK' : 'No reefer') : 'Ambient OK'}</span></td><td>${esc(x.result)}</td></tr>`).join('')}</table></div></div>
+   <div class="step"><h3>Step 2 · Cost, SLA and compliance</h3><ul>
+     <li>Storage rule: ${p.cold ? 'cold chain 2–8 °C, refrigerated transit only' : 'ambient, no transit restriction'}${p.controlled ? '; controlled substance, batch-level custody record required' : ''}.</li>
+     <li>Shelf-life rule: only batches with more than ${p.min_shelf_days} days remaining are moved, earliest expiry first.</li>
+     <li>${eta !== null ? `Internal transfer arrives in ${eta} h versus ${p.vendor_lead_days} days from ${esc(p.vendor_name)}.` : `No compliant internal surplus, so the vendor route is used (${esc(p.vendor_name)}, ${p.vendor_lead_days} days).`}</li></ul></div>
+   <div class="step"><h3>Step 3 · Recommended action</h3>
+     ${p.transfers.map(t => `<div class="ticket"><b>Transfer request</b><span>${fmt(t.qty)} units, ${esc(t.from_name)} → ${esc(p.branch_name)}, ETA ${t.hours} h${p.cold ? ', reefer van' : ''}</span></div>`).join('')}
+     ${p.po ? `<div class="ticket"><b>Purchase order</b><span>${fmt(p.po.qty)} units to ${esc(p.po.supplier)} · lead ${p.po.lead_days} days · compliance ${p.po.compliance}% · SAR ${fmt(p.po.value)}</span></div>` : ''}</div>
+   <div class="step"><h3>Agent rationale</h3><div id="why" class="note">Writing rationale…</div></div>
+   <div class="row"><span class="pill ${p.signoff.length ? 'p-warn' : 'p-ok'}">${p.signoff.length ? 'Sign-off required: ' + esc(p.signoff.join(', ')) : 'Routine: eligible for auto-execution'}</span></div>
+   <div class="row"><button class="btn primary" id="approve">Approve and execute</button><button class="btn" id="hold">Hold for manual review</button></div></div>`;
+  $('approve').onclick = () => act(`/alerts/${sku}/${branch}/approve`, {approver: 'pharmacist'});
+  $('hold').onclick = () => act(`/alerts/${sku}/${branch}/hold`);
+  api(`/alerts/${sku}/${branch}/explain`).then(x => {
+    if (sel !== mine || !$('why')) return;
+    $('why').textContent = x.text + (x.sources.length ? '  Sources: ' + [...new Set(x.sources.map(s => s.source))].join(', ') : '');
+  }).catch(() => { if ($('why')) $('why').textContent = 'Rationale unavailable.'; });
+}
+
+async function act(path, body) {
+  try { await api(path, 'POST', body); } catch (e) { console.error(e); }
+  await refresh();
+}
+
+$('sku').onchange = renderNet;
+$('auto').onchange = refresh;
+$('reset').onclick = () => { $('auto').checked = false; act('/reset'); };
+$('alerts').onclick = e => { const b = e.target.closest('.alert'); if (b) { sel = b.dataset.id; $('sku').value = sel.split('|')[0]; refresh(); } };
+$('transit').onclick = e => { const id = e.target.dataset.recv; if (id) act(`/actions/${id}/receive`); };
+[['s-cold', 'cold_fail'], ['s-sup', 'supplier_short'], ['s-surge', 'surge']].forEach(([id, key]) => $(id).onclick = () => act('/scenarios/' + key));
+$('askf').onsubmit = async e => {
+  e.preventDefault();
+  const q = $('q').value.trim(); if (!q) return;
+  const a = $('ans'); a.hidden = false; a.textContent = 'Thinking…';
+  try {
+    const r = await api('/ask', 'POST', {question: q});
+    a.innerHTML = `<div style="white-space:pre-wrap">${esc(r.text)}</div>` + r.sources.map(s => `<div class="note" style="margin-top:8px"><b>${esc(s.source)}</b> · ${esc(s.text)}</div>`).join('');
+  } catch (err) { a.textContent = 'Could not get an answer: ' + err.message; }
+};
+refresh();
+</script></body></html>
