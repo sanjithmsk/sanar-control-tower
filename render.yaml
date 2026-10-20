@@ -1,5 +1,5 @@
 # Render Blueprint — https://render.com/docs/blueprint-spec
-# Deploys the Sanar Control Tower as a free web service.
+# Deploys the control tower as a free web service.
 services:
   - type: web
     name: sanar-control-tower
@@ -7,13 +7,18 @@ services:
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.5"
       - key: ANTHROPIC_MODEL
         value: claude-opus-5-5
+      - key: ANTHROPIC_EFFORT
+        value: medium
+      - key: TOWER_DOMAIN
+        value: pharmacy
       # ANTHROPIC_API_KEY is intentionally NOT set here.
-      # Without it the app runs fine and the rationale / Q&A fall back to
-      # rule-based text, so this public demo never bills your account.
+      # Without it the app runs fine and the rationale / Q&A fall back to the
+      # rules engine, so this public demo never bills your account.
       # To enable Claude-powered answers, add ANTHROPIC_API_KEY as a secret
       # in the Render dashboard (Environment tab) — do not commit it.

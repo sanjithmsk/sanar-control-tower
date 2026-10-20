@@ -1,128 +1,128 @@
 # Sanar Control Tower
 
-An AI-driven supply chain control tower for a pharmacy network. It senses stock
-deficits across branches, checks FEFO, cold-chain and approval rules, and then raises
-inter-branch transfers or vendor purchase orders — with a human approving anything that matters.
+An AI-driven supply chain control tower. It senses stock deficits across a network, plans compliant
+transfers, purchase orders and imports, enforces handling, trade and approval guardrails, prevents
+expiry waste, and runs recalls, with a human approving anything that matters. It started as a
+pharmacy network and is now an industry-neutral engine: pharmacy and import/export logistics run on
+the same code today, and a new industry is a data pack.
 
 ## Inspiration
 
-Pharmacy supply chains fail quietly. A branch runs out of insulin while another branch across
-town is sitting on surplus that is weeks from expiry. A cold-chain medicine gets routed on a van
-with no reefer. A controlled substance moves without a sign-off. By the time someone notices, a
-patient has been turned away or thousands of riyals of stock have expired on a shelf.
+Supply chains fail quietly. A pharmacy branch runs out of insulin while another across town sits on
+surplus that is weeks from expiry. A cold-chain medicine gets routed on a van with no reefer. A
+container of electronics waits at the port because nobody noticed the conformity certificate expires
+before it lands. By the time someone notices, a patient has been turned away or stock has been
+written off.
 
-These are not forecasting problems — the data to prevent them usually already exists in the ERP,
-the WMS and the POS. The problem is that nobody is watching all of it at once, applying the rules,
-and proposing a fix fast enough to act on. We wanted to build the thing that watches: a control
-tower that senses the deficit, does the FEFO and compliance math, and hands a planner a decision
-they can approve in one click — while keeping a human firmly in charge of the actions that carry
-clinical or financial risk.
+These are rarely forecasting problems. The data to prevent them usually exists in the ERP, the WMS
+and the POS. What is missing is something that watches all of it at once, applies the rules and
+proposes a fix fast enough to act on. We built that: a control tower that senses the gap, does the
+FEFO, compliance and trade math, and hands a planner a decision they can approve in one click, while
+keeping a human firmly in charge of anything with clinical, financial or regulatory risk.
 
 ## What it does
 
-Sanar Control Tower monitors a network of pharmacy branches and, for every medicine at every site:
+- **Senses risk.** For every item at every site it computes a live balance (FEFO stock + in transit
+  − 14-day forecast − safety buffer), how many days the stock lasts against when supply can arrive,
+  network-wide shortages, demand spikes, overstock and stock projected to expire unsold.
+- **Plans like an expert planner.** It audits the network first, takes earliest-expiry stock and
+  only the quantity the destination can sell before it expires, and prefers donors whose stock would
+  otherwise go to waste. Whatever the network can't cover goes to the compliant supplier with the
+  lowest landed cost, or the fastest one when cover is too short to wait.
+- **Handles import and export.** Imports add customs clearance to the lead time and duty and freight
+  to the landed cost, need a valid permit on the arrival date, and are screened for trade
+  restrictions. Moves between sites in different countries are treated as cross-border movements.
+- **Enforces guardrails in code.** Cold-chain, frozen, dangerous-goods, controlled-substance, halal
+  and high-value handling; transit-time limits; storage capacity; supplier compliance and
+  certification; value, price-premium and order-cover limits; a daily budget for autonomous
+  execution. Every check is shown with its result and the SOP behind it.
+- **Keeps the right human in the loop.** Each sign-off reason names the roles allowed to approve it,
+  and the server re-checks guardrails and roles at execution, so a pharmacist cannot approve what
+  needs the chief pharmacist.
+- **Runs the operation around the plan.** Lot recalls that reach stock still on the road, temperature
+  logger checks on receipt, QA release or disposal with write-off, automatic quarantine of expired
+  stock, and rebalancing transfers that save stock before it expires.
+- **Explains itself.** Claude explains each plan, writes shift handover briefings and answers
+  questions through read-only tools over the live network, citing the policy it relied on. Without
+  an API key, the rules engine still answers questions such as "Can insulin move from North to
+  East?" by running the transfer guardrails.
+- **Simulates disruptions.** Cold-chain failures, road and border closures, hub outages, supplier
+  shortages, demand surges, customs delays and origin restrictions: switch one on and every open
+  deficit is re-planned against it.
 
-- **Senses deficits.** It computes a live balance — available FEFO stock + in-transit − (14-day
-  forecast + safety buffer) — and raises an alert when it goes negative. Alerts are scored and
-  ranked by clinical impact and how little coverage is left, so the most dangerous gap is always
-  on top.
-- **Audits the network first.** Before it spends a riyal, it looks for surplus at other branches,
-  earliest-expiry-first (FEFO), and proposes inter-branch transfers along the fastest route.
-- **Only then buys.** Whatever the network can't cover becomes a vendor purchase order, rounded to
-  pack size, costed at the chosen supplier's price and lead time.
-- **Enforces the rules in code.** Cold-chain medicines are blocked from any route without a working
-  reefer vehicle. Batches within 30 days of expiry are excluded from planning. Controlled substances
-  and any action above the SAR 10,000 threshold are flagged for human sign-off.
-- **Keeps a human in the loop.** Routine, low-risk transfers can be auto-executed; anything requiring
-  sign-off waits in the approval queue for a pharmacist or logistics manager to approve or hold.
-- **Explains itself.** For every plan, Claude writes a short rationale grounded in the live figures
-  and the retrieved SOP excerpts, citing the policy it relied on. A planner can also ask the tower
-  questions in plain language ("why was this transfer blocked?") and get an answer backed by policy.
-- **Handles disruptions.** Built-in scenarios — a cold-chain failure, a primary supplier shortage, a
-  seasonal flu surge — let you toggle a shock and watch the tower re-plan around it in real time.
-
-The demo runs on a sample network of 4 sites and 6 medicines (insulin, adalimumab, tramadol,
-oseltamivir, amoxicillin, paracetamol), each with realistic batches, expiry dates, forecasts and
-28 days of POS history.
+Two sample networks ship with it: Sanar Pharmacy (4 branches, 9 items including a biosimilar, an
+imported glucose meter and flammable hand sanitizer) and Gulf Trade & Logistics (a bonded port
+warehouse, two DCs and a free-zone hub across the border, trading power banks, TVs, frozen chicken,
+olive oil, solvents and apparel).
 
 ## How we built it
 
-A small FastAPI service with a layered architecture that mirrors how a real control tower is built:
+A FastAPI service with a layered architecture:
 
-- **Enterprise data** — SQLite schema and seed data for branches, batches, sales, routes and
-  suppliers. In production this layer is swapped for ERP / WMS / POS connectors.
-- **Semantic layer** — the single place where raw tables become pharma business metrics: FEFO
-  stock, days on hand, the deficit formula, a demand-sensing forecast (run rate of the last 28 days
-  of POS sales), and the cold-chain and sign-off guardrails. Every number the planner and the model
-  see comes from here.
-- **Planning engine** — deterministic logic that generates and ranks alerts, runs the network FEFO
-  audit, makes the transfer-vs-PO decision, executes approved actions as transfer tickets and POs,
-  and books goods into stock on receipt.
-- **RAG layer** — a dependency-free TF-IDF index over a `knowledge/` folder of SOPs, supplier
-  agreements and policies, behind a single `search(query, k)` function that a vector database can
-  slot straight into.
-- **LLM orchestration** — Claude explains each plan and answers questions, grounded strictly in the
-  retrieved policy and the live figures, and told never to invent stock, batches, suppliers or rules.
-- **API + console** — a REST API and a single-page approval dashboard to see KPIs, alerts, the
-  expiry watch and in-transit actions, and to approve or hold.
+- **Domain packs.** Vocabulary, handling requirements, approval roles, policy defaults, documents
+  and a sample network per industry. A handling rule is a tag on an item plus a capability on
+  sites, lanes and suppliers, so "frozen", "hazmat" or "halal" are data, not code.
+- **Semantic layer.** One snapshot of the network, loaded in a fixed number of queries, from which
+  every metric is computed in memory: FEFO stock, cover, stockout timing, a FEFO waste simulation,
+  sell-through capacity, signals and a demand-sensing forecast that blends 7-day and 28-day run rates.
+- **Guardrails.** Every rule returns a structured result (code, pass or fail, detail, governing
+  document). Thresholds are bounded, editable by authorised roles and logged.
+- **Planning engine.** Deterministic alerts, network audit, sourcing, execution, receipts, recalls,
+  quarantine, rebalancing and autonomous execution of routine work.
+- **Retrieval.** BM25 over shared policies plus the active industry's SOPs.
+- **Agent.** A Claude tool-use loop (Claude Opus 5.5) whose tools are read-only: inventory, plans,
+  what-if transfer checks, expiry risk, lots, policy search and activity. It uses prompt caching and
+  the server-side refusal fallback, and falls back to the rules engine if a call fails.
+- **Console.** A single-page approval console that adapts its labels and roles to the active industry.
 
-The key design decision: **quantities and compliance are computed in code, never by the model.** The
-LLM explains and answers; it cannot move stock that the guardrails would block. The whole system also
-runs with no API key at all — the rationale and Q&A gracefully fall back to rule-based text and
-retrieved SOP excerpts — so it never hard-depends on a model call to function.
+The key design decision: **quantities, compliance and approvals are computed in code, never by the
+model.** The agent explains and answers; it cannot move stock or approve anything.
 
 ## Challenges we ran into
 
-- **Keeping the model out of the math.** It's tempting to let an LLM "figure out" the quantities.
-  We deliberately didn't. Drawing a hard line — code owns every number and every compliance check,
-  the model only explains — was the central architectural challenge and the thing that makes the
-  tower trustworthy.
-- **Getting FEFO right end to end.** Earliest-expiry-first has to hold not just when selecting
-  surplus, but when actually decrementing batches on execution, and near-expiry stock has to be
-  excluded from planning entirely. Getting the audit, the execution and the goods-receipt paths to
-  agree took care.
-- **Guardrails that interact.** Cold-chain routing, the near-expiry cutoff, sign-off thresholds and
-  controlled-substance rules all overlap on a single plan. Encoding them so a blocked cold-chain
-  route produces a clear "Blocked: no cold-chain route" instead of a silently wrong transfer was
-  fiddly.
-- **Grounding the LLM honestly.** Making the model cite real policy by file name and refuse to answer
-  when the context doesn't support it — rather than confabulating a plausible rule — meant being
-  strict about what we put in the prompt and what we told it not to do.
-- **Degrading gracefully.** We wanted a judge to be able to clone and run it with zero setup, so every
-  LLM-powered feature has a rule-based fallback when no API key is present.
+- **Keeping the model out of the math.** Drawing a hard line, where code owns every number and every
+  rule and the model only explains through read-only tools, was the central architectural decision
+  and what makes the tower trustworthy.
+- **Making it industry-neutral without making it vague.** Pharmacy rules had to become general
+  concepts (capabilities, lots, lanes, permits) without losing their precision. The test was building
+  a second, very different network on the same engine with no special cases.
+- **Expiry-aware planning.** Moving short-dated stock can simply move the waste to another site. We
+  simulate FEFO consumption at the destination so a transfer never exceeds what it can sell in time.
+- **Guardrails that interact.** Cold chain, transit time, customs dwell, permits, capacity and
+  sign-off all meet in one plan; each check had to say clearly why it passed or failed.
+- **Efficiency.** Planning every alert on every refresh had to stay cheap, so all reads come from a
+  single snapshot; a test asserts the query count does not grow with the number of alerts.
 
 ## Accomplishments that we're proud of
 
-- A genuinely **sense → plan → act** loop: the tower doesn't just flag a shortage, it proposes a
-  compliant, ranked, executable resolution and lets a human approve it.
-- **Compliance you can trust** because it lives in deterministic code — cold-chain, FEFO, near-expiry,
-  controlled substances and value thresholds are enforced, not suggested.
-- A **human-in-the-loop** model that auto-runs the routine work but never lets the model push through
-  a high-risk action on its own.
-- **Explanations grounded in real policy**, with citations, plus a natural-language Q&A over the SOPs.
-- **Live disruption scenarios** that show the tower re-planning around a cold-chain failure, a
-  supplier shortage or a demand surge.
-- It **runs anywhere, with or without an API key**, and ships with tests.
+- A real **sense → plan → act → operate** loop, from deficit to approved transfer, receipt, recall
+  and write-off.
+- **Two industries on one engine**, plus a test that defines a third (automotive spare parts) inline
+  and plans it with no engine changes.
+- **Import and export done properly**: customs time, duty, freight, Incoterms, permits valid on the
+  arrival date, restricted origins and cross-border approvals.
+- **Compliance you can audit**: every plan shows each guardrail, its result and its document, and the
+  right role must approve.
+- **Waste prevention** that proposes rebalancing before stock expires instead of reporting it after.
+- It **runs anywhere, with or without an API key**, and ships with 56 tests.
 
 ## What we learned
 
-- For high-stakes domains like pharma, the right division of labour is **code for decisions, LLM for
-  language.** The model earns trust precisely by not being in the critical path of the numbers.
-- A clean **semantic layer** — one place that owns every metric and guardrail — pays for itself the
-  moment two features need the same rule to agree.
-- **Retrieval beats recall.** Grounding answers in retrieved SOP text, with citations, is far safer
-  than hoping a model remembers a policy correctly.
-- Designing for **graceful degradation** from the start (rule-based fallbacks everywhere) made the
-  system both more robust and far easier to demo.
+- For high-stakes operations, the right division of labour is **code for decisions, LLM for
+  language**. The model earns trust by not being in the critical path of the numbers.
+- **Generalising pays off when the concepts are right.** Once a handling rule became "a tag that
+  needs a capability", a frozen-food or dangerous-goods network fell out of the same code.
+- A single **semantic snapshot** made the system both faster and more consistent: every view agrees
+  because every view reads the same numbers.
+- **Retrieval beats recall.** Grounding answers in retrieved SOPs, with citations, is far safer than
+  hoping a model remembers a policy.
 
 ## What's next for Sanar Control Tower
 
-- **Real connectors** to ERP / WMS / POS in place of the SQLite sample data, and a production database.
-- **A proper demand-forecasting model** — seasonality, promotions and lead-time variability — behind
-  the same semantic interface, replacing the run-rate baseline.
-- **A vector database** behind the existing `search()` function for better policy retrieval at scale.
-- **Authentication and roles** so sign-off is tied to real pharmacist and manager identities, with a
-  full audit trail.
-- **Validation by Sanar's pharmacists and regulatory team** of every rule and threshold before any
-  real stock is moved.
-- Broader action types (expiry-driven redistribution, recalls) and richer multi-branch optimization.
+- **Real connectors** to ERP, WMS, TMS, POS and customs systems, and a production database.
+- **More industry packs**: chilled food, automotive spare parts, chemicals and e-commerce fulfilment.
+- **A proper forecasting model** with seasonality and promotions, behind the same semantic interface.
+- **Authentication and audit** so roles and sign-offs are tied to real identities.
+- **Carrier and booking integration** so approved transfers and imports become real bookings.
+- **Validation** of every rule by pharmacists, QA, trade compliance and regulatory teams before any
+  real stock moves.

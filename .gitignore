@@ -8,8 +8,10 @@ venv/
 # Secrets / local config
 .env
 
-# App data (re-seeded on startup)
-sanar.db
+# App data (re-seeded on startup; WAL mode adds -wal and -shm files)
+*.db
+*.db-wal
+*.db-shm
 *.sqlite
 *.sqlite3
 

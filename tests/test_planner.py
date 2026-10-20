@@ -1,37 +1,19 @@
-import os
-import tempfile
-
-import pytest
-
-os.environ["SANAR_DB"] = os.path.join(tempfile.mkdtemp(), "test.db")
-os.environ.pop("ANTHROPIC_API_KEY", None)
-
-from fastapi.testclient import TestClient  # noqa: E402
-
-from app import db, planner, rag  # noqa: E402
-from app import semantic as S  # noqa: E402
-from app.main import app  # noqa: E402
+from app import guardrails as G
+from app import planner
+from app import semantic as S
+from app.semantic import Network
 
 
-@pytest.fixture
-def c():
-    conn = db.connect()
-    db.reset(conn)
-    yield conn
-    conn.close()
-
-
-def on(c, key):
-    c.execute("UPDATE scenarios SET active=1 WHERE key=?", (key,))
+def pairs(alerts):
+    return {(a["sku"], a["site"]) for a in alerts}
 
 
 def test_initial_alerts(c):
-    assert {(a["sku"], a["branch"]) for a in planner.alerts(c)} == {("INS", "A"), ("ADA", "A"), ("TRM", "B"), ("AMX", "C")}
+    assert pairs(planner.alerts(Network(c))) == {("INS", "A"), ("ADA", "A"), ("TRM", "B"), ("AMX", "C"), ("GLM", "C")}
 
 
 def test_deficit_formula(c):
-    m = S.metrics(c, "INS", "A")
-    assert m["balance"] == 40 + 0 - 120 - 30
+    assert S.metrics(c, "INS", "A")["balance"] == 40 + 0 - 120 - 30
 
 
 def test_near_expiry_batch_excluded(c):
@@ -39,63 +21,94 @@ def test_near_expiry_batch_excluded(c):
 
 
 def test_internal_transfer_preferred(c):
-    p = planner.plan(c, "INS", "A")
-    assert p["transfers"] == [{"from": "B", "from_name": "North Branch", "qty": 110, "hours": 2}]
-    assert p["po"] is None
+    p = planner.plan(Network(c), "INS", "A")
+    (t,) = p["transfers"]
+    assert (t["from"], t["qty"], t["hours"]) == ("B", 110, 2) and p["po"] is None
+    assert [x["lot_no"] for x in t["lines"]] == ["INS-B1"]  # earliest expiry leaves first
 
 
-def test_cold_chain_guardrail_forces_po(c):
+def test_cold_chain_guardrail_forces_po(c, on):
     on(c, "cold_fail")
-    p = planner.plan(c, "INS", "A")
+    p = planner.plan(Network(c), "INS", "A")
     assert p["transfers"] == [] and p["po"]["qty"] == 110
-    assert not S.route_ok(c, "INS", "B", "C")  # no reefer on B-C in any scenario
+    assert any(a["result"].startswith("Blocked: Cold chain") for a in p["audit"])
+    failed = [x["code"] for x in G.transfer_checks(Network(c), "INS", "B", "C") if not x["ok"]]
+    assert failed == ["LANE_COLD"]  # no reefer on B-C in any scenario
 
 
 def test_split_transfer_and_po_rounds_to_pack(c):
-    p = planner.plan(c, "ADA", "A")
+    p = planner.plan(Network(c), "ADA", "A")
     assert p["transfers"][0]["qty"] == 6 and p["po"]["qty"] == 2
-    assert p["signoff"]  # high value
+    assert p["signoff"] == ["value above SAR 10,000"]
 
 
-def test_controlled_needs_signoff_and_secondary_supplier(c):
+def test_controlled_needs_signoff_and_secondary_supplier(c, on):
     on(c, "supplier_short")
-    p = planner.plan(c, "TRM", "B")
+    p = planner.plan(Network(c), "TRM", "B")
     assert "controlled substance" in p["signoff"]
     assert p["po"]["supplier"].startswith("Supplier B")
 
 
 def test_execute_is_fefo_and_never_creates_donor_deficit(c):
-    planner.execute(c, "INS", "A", "test")
+    planner.execute(c, "INS", "A", "test", "pharmacist")
     assert S.metrics(c, "INS", "A")["balance"] == 0
     assert S.metrics(c, "INS", "B")["balance"] >= 0
-    first = c.execute("SELECT qty FROM batches WHERE batch_no='INS-B1'").fetchone()["qty"]
-    assert first == 50  # earliest-expiry batch was drawn down first
+    assert c.execute("SELECT qty FROM lots WHERE lot_no='INS-B1'").fetchone()["qty"] == 50
     act = c.execute("SELECT id FROM actions").fetchone()["id"]
-    assert planner.receive(c, act)
+    assert planner.receive(c, act)["ok"]
     m = S.metrics(c, "INS", "A")
     assert m["in_transit"] == 0 and m["fefo_stock"] == 150
 
 
 def test_auto_run_leaves_signoff_items(c):
-    planner.auto_run(c)
-    assert {(a["sku"], a["branch"]) for a in planner.alerts(c)} == {("ADA", "A"), ("TRM", "B")}
+    r = planner.auto_run(c)
+    assert r == {"executed": 4, "awaiting_signoff": 2, "unresolved": 0}
+    assert pairs(planner.alerts(Network(c))) == {("ADA", "A"), ("TRM", "B")}
 
 
-def test_surge_creates_deficits(c):
+def test_surge_creates_deficits(c, on):
     on(c, "surge")
-    assert ("OSE", "A") in {(a["sku"], a["branch"]) for a in planner.alerts(c)}
+    assert ("OSE", "A") in pairs(planner.alerts(Network(c)))
 
 
-def test_rag_finds_policy():
-    assert rag.search("reefer vehicle for insulin transfer")[0]["source"] == "sop_cold_chain.md"
+def test_stockout_risk_offers_alternatives(c, on):
+    on(c, "cold_fail", "supplier_short")
+    p = planner.plan(Network(c), "INS", "A")
+    assert p["stockout_risk"] and p["severity"] == "Critical"
+    assert p["timeline"]["gap_days"] == 0.3  # runs out 0.3 days before Supplier B delivers
+    (alt,) = p["alternatives"]
+    assert alt["sku"] == "INB" and not alt["sources"][0]["ok"]  # the cold-chain outage blocks it too
 
 
-def test_api_flow(c):
-    api = TestClient(app)
-    assert api.get("/api/state").json()["kpis"]["open_deficits"] == 4
-    assert api.get("/api/alerts/AMX/C/plan").json()["need"] == 210
-    assert "rule-based" in api.get("/api/alerts/AMX/C/explain").json()["text"]
-    assert api.post("/api/alerts/AMX/C/approve", json={"approver": "QA"}).status_code == 200
-    assert api.post("/api/alerts/AMX/C/approve", json={}).status_code == 409
-    assert api.post("/api/ask", json={"question": "When is sign-off required?"}).json()["sources"]
-    assert api.post("/api/sales", json={"sku": "AMX", "branch": "A", "qty": 40}).json()["forecast_14d"] == 300
+def test_customs_delay_switches_import_to_domestic(c, on):
+    p = planner.plan(Network(c), "GLM", "C")
+    assert (p["po"]["kind"], p["po"]["lead_days"]) == ("import", 9)  # 7 days air + 2 days customs
+    on(c, "customs_delay")
+    p = planner.plan(Network(c), "GLM", "C")
+    assert p["po"]["kind"] == "po" and p["po"]["supplier"].startswith("Supplier B")
+
+
+def test_route_closure_reroutes(c, on):
+    on(c, "route_closure")
+    p = planner.plan(Network(c), "INS", "A")
+    assert [(t["from"], t["qty"]) for t in p["transfers"]] == [("C", 5), ("D", 30)] and p["po"]["qty"] == 80
+
+
+def test_hub_outage_removes_donor(c, on):
+    on(c, "hub_outage")
+    p = planner.plan(Network(c), "ADA", "A")
+    assert p["transfers"] == [] and p["po"]["qty"] == 8
+
+
+def test_alerts_use_a_fixed_number_of_queries(c, on):
+    def count():
+        queries = []
+        c.set_trace_callback(queries.append)
+        n = len(planner.alerts(Network(c)))
+        c.set_trace_callback(None)
+        return n, len(queries)
+
+    few, q1 = count()
+    on(c, "surge")
+    many, q2 = count()
+    assert many > few and q1 == q2 <= 20  # one snapshot; no per-item, per-site or per-alert queries

@@ -1,0 +1,93 @@
+"""Trade and logistics pack: an import / re-export distributor with a port, two DCs and a free-zone
+hub across the border. Shows the engine on non-pharma goods: dangerous goods, frozen food, halal
+sourcing, high-value freight, customs, duties, Incoterms and import permits."""
+from .base import Domain, Requirement
+
+SAMPLE = {
+    "countries": [("SA", "Saudi Arabia", 2), ("AE", "United Arab Emirates", 1), ("CN", "China", 2),
+                  ("BR", "Brazil", 2), ("ES", "Spain", 1)],
+    "sites": [
+        ("JED", "Jeddah Port Bonded Warehouse", "port", "SA", "bonded,hazmat,frozen,secure", 20000),
+        ("RUH", "Riyadh DC", "dc", "SA", "hazmat,frozen,secure", 15000),
+        ("DMM", "Dammam DC", "dc", "SA", "frozen,secure", 6000),
+        ("DXB", "Jebel Ali Re-export Hub", "hub", "AE", "bonded,hazmat,secure", 12000),
+    ],
+    "items": [
+        ("PWB", "Power bank 20,000 mAh (UN3480)", "electronics", "hazmat,conformity", 0, 4, 20, 95, None, "8507.60", 5),
+        ("TV55", "LED TV 55 in", "electronics", "high_value,conformity", 0, 3, 1, 1800, None, "8528.72", 5),
+        ("CHK", "Frozen chicken 1 kg", "food", "frozen,halal,food", 1, 8, 10, 18, 365, "0207.12", 10),
+        ("OLV", "Olive oil 1 L", "food", "food", 1, 3, 12, 32, 540, "1509.20", 5),
+        ("SLV", "Industrial solvent 20 L (UN1993)", "chemicals", "hazmat", 0, 5, 4, 140, 1095, "3814.00", 5),
+        ("TSH", "Cotton T-shirt", "apparel", "", 0, 1, 50, 12, None, "6109.10", 5),
+    ],
+    "stock": {
+        "PWB": {"JED": ([(800, None)], 300, 100), "RUH": ([(150, None)], 280, 80), "DXB": ([(500, None)], 200, 100)},
+        "TV55": {"JED": ([(40, None)], 20, 10), "RUH": ([(25, None)], 30, 10), "DMM": ([(10, None)], 14, 6),
+                 "DXB": ([(60, None)], 10, 5)},
+        "CHK": {"JED": ([(600, 240)], 200, 80), "RUH": ([(300, 180)], 420, 120),
+                "DMM": ([(500, 150), (200, 25)], 280, 100)},
+        "OLV": {"JED": ([(600, 60)], 70, 30), "RUH": ([(100, 300)], 140, 40), "DMM": ([(200, 400)], 112, 30)},
+        "SLV": {"JED": ([(100, 800)], 20, 10), "RUH": ([(40, 900)], 28, 12), "DXB": ([(60, 1000)], 14, 6)},
+        "TSH": {"JED": ([(200, None)], 100, 50), "RUH": ([(300, None)], 700, 200), "DMM": ([(150, None)], 140, 60)},
+    },
+    "lanes": [("JED", "RUH", "road", 12, "hazmat,frozen,secure"), ("JED", "DMM", "road", 16, "frozen,secure"),
+              ("RUH", "DMM", "road", 5, "hazmat,frozen,secure"), ("DMM", "DXB", "road", 9, "hazmat,secure"),
+              ("JED", "DXB", "sea", 72, "hazmat,frozen,secure")],
+    "suppliers": [
+        ("Gulf Electronics Distribution (UAE)", "AE", 4, 1.05, 2, 95, 1, "hazmat,secure", "electronics", "DAP"),
+        ("Shenzhen PowerTech (China)", "CN", 21, 0.70, 8, 92, 0, "hazmat", "electronics", "FOB"),
+        ("Saudi Fresh Foods", "SA", 2, 1.12, 0, 93, 1, "frozen,halal", "food", "DDP"),
+        ("Brazil Poultry Export SA", "BR", 18, 0.72, 9, 94, 0, "frozen,halal", "food", "CFR"),
+        ("Andalusia Olive Oils (Spain)", "ES", 12, 0.80, 7, 96, 0, "", "food", "CIF"),
+        ("Gulf Chem Trading (UAE)", "AE", 5, 1.0, 3, 91, 0, "hazmat", "chemicals", "DAP"),
+        ("Riyadh Apparel Supply", "SA", 3, 1.0, 0, 88, 0, "", "apparel", "DDP"),
+    ],
+    "permits": [("SABER-PC-2026-55102", "electronics", "SA", 240), ("SFDA-FIR-2026-7781", "food", "SA", 120)],
+    "substitutes": [],
+    "scenarios": {
+        "port_congestion": ("Port congestion at Jeddah (+4 days customs)", {"type": "customs_delay", "days": 4}),
+        "reefer_outage": ("Reefer fleet outage at Dammam", {"type": "cap_outage", "site": "DMM", "cap": "frozen"}),
+        "border_closure": ("Saudi–UAE border crossing closed", {"type": "lane_closed", "lane": ["DMM", "DXB"]}),
+        "supplier_short": ("Primary supplier disruption", {"type": "primary_supplier_out"}),
+        "surge": ("Ramadan demand surge", {"type": "demand_surge"}),
+        "origin_restriction": ("Origin restriction: imports from China blocked",
+                               {"type": "origin_restricted", "country": "CN"}),
+        "hub_outage": ("Jeddah port warehouse outage", {"type": "site_down", "site": "JED"}),
+    },
+}
+
+LOGISTICS = Domain(
+    name="logistics",
+    title="Gulf Trade & Logistics",
+    tagline="Import / re-export distribution · customs, duties, dangerous goods, frozen and halal food",
+    labels={"item": "Product", "items": "Products", "site": "Facility", "sites": "Facilities", "lot": "Lot",
+            "demand": "Orders"},
+    roles={"planner": "Supply planner", "ops_manager": "Operations manager",
+           "trade_compliance": "Trade compliance officer", "qa": "QA / food safety"},
+    approvals={
+        "value": ("ops_manager",),
+        "price_premium": ("ops_manager",),
+        "max_cover": ("ops_manager", "planner"),
+        "budget": ("planner", "ops_manager"),
+        "import": ("trade_compliance", "ops_manager"),
+        "cross_border": ("trade_compliance", "ops_manager"),
+        "release": ("qa",),
+        "dispose": ("qa", "ops_manager"),
+        "recall": ("qa", "trade_compliance"),
+        "policy": ("ops_manager",),
+    },
+    requirements={
+        "hazmat": Requirement("Dangerous goods (UN/ADR)", "DG", site=True, lane=True, supplier=True, ref="SOP-DG-01"),
+        "frozen": Requirement("Frozen −25 to −18 °C", "−18 °C", site=True, lane=True, supplier=True, temp=(-25, -18),
+                              tolerance_min=60, ref="SOP-TC-01"),
+        "halal": Requirement("Halal-certified source", "Halal", supplier=True, ref="POL-FD-02"),
+        "food": Requirement("SFDA food import registration", permit=True, ref="POL-FD-02"),
+        "conformity": Requirement("SABER conformity certificate", permit=True, ref="POL-TR-01"),
+        "high_value": Requirement("High value (secure transport)", "High value", cap="secure", site=True, lane=True,
+                                  ref="SOP-SEC-01"),
+    },
+    policy={"min_shelf_days": 14, "near_expiry_days": 75, "signoff_value": 50000, "auto_daily_budget": 150000,
+            "temp_max_transit_hours": 24, "max_cover_days": 90, "overstock_days": 90},
+    refs={"approvals": "POL-APP-01", "temperature": "SOP-TC-01"},
+    sample=SAMPLE,
+)
