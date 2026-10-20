@@ -95,6 +95,25 @@ TOOLS = [
     {"name": "recent_activity",
      "description": "Latest activity log entries: executed actions, receipts, recalls, holds and scenario changes.",
      "input_schema": {"type": "object", "properties": {"limit": {"type": "integer"}}}},
+    {"name": "shipments",
+     "description": "Open transfers and supplier orders with ETA, how many days late each is, and whether it is "
+                    "still counted as cover (very late shipments are not, so their deficits are re-planned).",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "supplier_scorecards",
+     "description": "Delivery performance per supplier from actual receipts: on-time, in-full and on-time-in-full "
+                    "rates, average delay, lead-time spread, contract versus effective compliance (below the minimum "
+                    "means blocked), monthly trend and spend.",
+     "input_schema": {"type": "object", "properties": {}}},
+    {"name": "performance_report",
+     "description": "What the tower avoided, saved and spent: stockouts avoided, waste prevented, procurement spend, "
+                    "transport cost, load-sharing savings, write-offs and the share of auto-executed actions, for a "
+                    "look-back window and since the demo started.",
+     "input_schema": {"type": "object", "properties": {
+         "days": {"type": "integer", "description": "Look-back window in days, 7 to 365 (default 30)"}}}},
+    {"name": "demand_calendar",
+     "description": "Seasons, holidays and promotions in the demand calendar: dates, demand factor, which items and "
+                    "sites they lift, and whether they fall inside the 14-day forecast horizon.",
+     "input_schema": {"type": "object", "properties": {}}},
 ]
 
 
@@ -157,6 +176,15 @@ def _overview(net):
             "active_scenarios": [s["label"] for s in net.scenarios]}
 
 
+def _report_brief(net, days):
+    rep = planner.report(net, max(7, min(int(days or 30), 365)))
+    return {k: rep[k] for k in ("days", "from", "to", "currency", "totals", "since_start", "actions", "auto_actions",
+                                "auto_share_pct")} | {
+        "spend_by_period": planner.buckets(rep["series"], "spend"),
+        "saved_by_period": planner.buckets([{"day": s["day"], "v": s["waste_saved"] + s["transport_saved"]}
+                                            for s in rep["series"]], "v")}
+
+
 def run_tool(net, name, args):
     """Execute one read-only tool. Returns (result, is_error)."""
     try:
@@ -187,6 +215,14 @@ def run_tool(net, name, args):
             limit = max(1, min(int(args.get("limit") or 15), 50))
             return [dict(r) for r in net.conn.execute("SELECT ts, msg FROM events ORDER BY id DESC LIMIT ?",
                                                       (limit,))], False
+        if name == "shipments":
+            return planner.in_transit(net), False
+        if name == "supplier_scorecards":
+            return planner.scorecards(net), False
+        if name == "performance_report":
+            return _report_brief(net, args.get("days")), False
+        if name == "demand_calendar":
+            return planner.calendar_view(net), False
         return {"error": f"Unknown tool '{name}'"}, True
     except (ValueError, TypeError) as e:
         return {"error": str(e)}, True
@@ -354,6 +390,26 @@ def _rule_answer(net, question):
         return (f"{len(held)} {lab['lot'].lower()}s are held: " + "; ".join(
             f"{q['lot_no']} {q['sku_name']} at {q['site_name']} ({q['qty']:,} units, {q['status']})" for q in held[:6])
             + "." if held else "Nothing is in quarantine.")
+    if re.search(r"supplier|scorecard|otif|on.time|vendor|reliab", low):
+        cards = planner.scorecards(net)
+        return "Supplier performance: " + "; ".join(
+            f"{s['supplier']} {s['otif_pct']:g}% on time in full over {s['deliveries']} deliveries, compliance "
+            f"{s['compliance']:g}%" + (" (blocked)" if s["compliance"] < s["minimum"] else "")
+            for s in cards if s["deliveries"]) + "."
+    if re.search(r"\blate\b|overdue|delay|\beta\b", low):
+        late = [a for a in planner.in_transit(net) if a["late_days"] > 0]
+        return ("Late shipments: " + "; ".join(
+            f"{a['ref']} {a['sku_name']} from {a['from_name']} to {a['to_name']}, {a['late_days']:g} days past ETA"
+            + (" (not counted as cover, re-planned)" if a["excluded"] else "") for a in late) + "."
+            if late else "Nothing is past its ETA.")
+    if re.search(r"sav(e|ed|ing)|spend|spent|report|avoid", low):
+        rep, cur = planner.report(net, 30), net.domain.currency
+        since = rep["since_start"]
+        got = lambda k: since.get(k, {"count": 0, "value": 0})  # noqa: E731
+        return (f"Since the demo started: {got('stockout_avoided')['count']} stockouts avoided, {cur} "
+                f"{got('waste_saved')['value']:,.0f} of waste prevented, {cur} {got('transport_saved')['value']:,.0f} "
+                f"saved by sharing trucks, {cur} {got('spend')['value']:,.0f} spent on orders. Last 30 days including "
+                f"sample history: {cur} {rep['totals']['spend']:,.0f} procurement spend.")
     if items:
         sku = items[0]
         rows = [(sid, net.metrics(sku, sid)) for sid in (sites or net.sites) if (sku, sid) in net.positions]
@@ -364,6 +420,12 @@ def _rule_answer(net, question):
             if m["balance"] < 0 and (p := planner.plan(net, sku, sid)):
                 text += f" Plan for {p['site_name']}: {planner.resolution(p)}."
         return text
+    if re.search(r"calendar|season|ramadan|hajj|promotion|holiday|flu|event", low):
+        cal = planner.calendar_view(net)
+        return "Demand calendar: " + "; ".join(
+            f"{e['name']} ({e['kind']}) {e['start']} to {e['end']}, ×{e['factor']:g}, "
+            + ("under way" if e["status"] == "active" else f"starts in {e['starts_in']} d" if e["status"] == "upcoming"
+               else "past") for e in cal) + "." if cal else "The demand calendar is empty."
     if re.search(r"alert|deficit|short|risk|critical|urgent|priorit", low):
         al = planner.alerts(net)
         return (f"{len(al)} open deficits. " + " ".join(

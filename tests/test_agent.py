@@ -1,6 +1,6 @@
 from types import SimpleNamespace as NS
 
-from app import agent
+from app import agent, planner
 from app.semantic import Network
 
 
@@ -8,7 +8,8 @@ def test_rule_engine_answers_transfer_questions(c):
     r = agent.answer(c, "Can insulin move from North to East?")
     assert not r["llm"] and r["text"].startswith("Not now") and "Cold chain 2–8 °C: lane not equipped" in r["text"]
     r = agent.answer(c, "Can we send insulin from North Branch to Central Retail?")
-    assert r["text"].startswith("Yes. North Branch can send up to 140 units")
+    spare = planner.check_transfer(Network(c), "INS", "B", "A")["max_qty"]
+    assert r["text"].startswith(f"Yes. North Branch can send up to {spare} units")
 
 
 def test_rule_engine_answers_stock_questions(c):
@@ -20,7 +21,7 @@ def test_rule_engine_answers_stock_questions(c):
 def test_tools_resolve_names_and_report_errors(c):
     net = Network(c)
     out, bad = agent.run_tool(net, "check_transfer", {"item": "insulin", "from_site": "north", "to_site": "central"})
-    assert not bad and out["allowed"] and out["max_qty"] == 140
+    assert not bad and out["allowed"] and out["max_qty"] > 0 and out["transport"]["trip_cost"] == 180
     out, bad = agent.run_tool(net, "item_inventory", {"item": "unobtainium"})
     assert bad and "Unknown item" in out["error"]
     out, bad = agent.run_tool(net, "resolution_plan", {"item": "PCM", "site": "Central Retail"})
@@ -29,10 +30,19 @@ def test_tools_resolve_names_and_report_errors(c):
 
 def test_rule_based_explanation_and_briefing(c):
     net = Network(c)
-    from app import planner
     assert "rule-based" in agent.explain_plan(net, planner.plan(net, "GLM", "C"))["text"]
     text = agent.briefing(c)["text"]
-    assert text.startswith("5 open deficits") and "Rebalance 75 × Oseltamivir" in text
+    assert text.startswith("7 open deficits") and "Rebalance 122 × Oseltamivir" in text and "Late: PO-" in text
+
+
+def test_rule_engine_covers_suppliers_late_savings_and_calendar(c):
+    assert "Supplier B (secondary) 87.5% on time in full" in agent.answer(c, "How reliable are our suppliers?")["text"]
+    assert "days past ETA (not counted as cover, re-planned)" in agent.answer(c, "Which shipments are late?")["text"]
+    assert agent.answer(c, "What have we saved so far?")["text"].startswith("Since the demo started: 0 stockouts")
+    assert "Flu season (season)" in agent.answer(c, "What is on the demand calendar?")["text"]
+    for tool in ("shipments", "supplier_scorecards", "performance_report", "demand_calendar"):
+        out, bad = agent.run_tool(Network(c), tool, {})
+        assert not bad and out
 
 
 class FakeClient:

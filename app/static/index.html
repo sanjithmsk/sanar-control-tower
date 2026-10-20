@@ -3,23 +3,29 @@
 <title>Control Tower</title>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Manrope:wght@600;700;800&display=swap">
 <style>
-/* Layout: summary strip on top, then the decision column (left) beside the network column (right); stacks on phones. */
+/* Layout: summary strip on top, tabs for operations / planning / reports; each tab is a decision column
+   beside a network column, stacking on phones. Chart series colours are validated for these surfaces. */
 :root{
   --bg:#eef3f2; --panel:#fbfdfc; --ink:#10282b; --muted:#587075; --line:#d3dedc;
   --accent:#0b6e6e; --accent-ink:#ffffff; --soft:#e0eceb;
   --crit:#b3261e; --crit-bg:#fbe4e1; --warn:#8a5a00; --warn-bg:#fbefcf; --ok:#1c6b3c; --ok-bg:#dcf1e3; --cold:#1f5fa8; --cold-bg:#dfeafa;
+  --series-1:#2a78d6; --series-3:#1baf7a; --deemph:#b9c8c6; --grid:#e3eae9;
   --display:"Manrope","Segoe UI",sans-serif; --body:"IBM Plex Sans","Segoe UI",system-ui,sans-serif; --mono:"IBM Plex Mono",ui-monospace,Menlo,monospace;
 }
 @media (prefers-color-scheme: dark){:root:not([data-theme="light"]){
   --bg:#0c1719; --panel:#132326; --ink:#e3eeed; --muted:#93aaad; --line:#27393c;
   --accent:#4fc4bf; --accent-ink:#06201f; --soft:#1a2f32;
-  --crit:#ff9a90; --crit-bg:#4a1c18; --warn:#f2c661; --warn-bg:#40300a; --ok:#7fd6a0; --ok-bg:#143422; --cold:#8fbcf5; --cold-bg:#162c4a; color-scheme:dark}}
+  --crit:#ff9a90; --crit-bg:#4a1c18; --warn:#f2c661; --warn-bg:#40300a; --ok:#7fd6a0; --ok-bg:#143422; --cold:#8fbcf5; --cold-bg:#162c4a;
+  --series-1:#3987e5; --series-3:#199e70; --deemph:#3b5255; --grid:#203538; color-scheme:dark}}
 :root[data-theme="dark"]{
   --bg:#0c1719; --panel:#132326; --ink:#e3eeed; --muted:#93aaad; --line:#27393c;
   --accent:#4fc4bf; --accent-ink:#06201f; --soft:#1a2f32;
-  --crit:#ff9a90; --crit-bg:#4a1c18; --warn:#f2c661; --warn-bg:#40300a; --ok:#7fd6a0; --ok-bg:#143422; --cold:#8fbcf5; --cold-bg:#162c4a; color-scheme:dark}
+  --crit:#ff9a90; --crit-bg:#4a1c18; --warn:#f2c661; --warn-bg:#40300a; --ok:#7fd6a0; --ok-bg:#143422; --cold:#8fbcf5; --cold-bg:#162c4a;
+  --series-1:#3987e5; --series-3:#199e70; --deemph:#3b5255; --grid:#203538; color-scheme:dark}
 *{box-sizing:border-box}
+[hidden]{display:none !important}
 body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--body);font-size:14px;line-height:1.45}
+.stack{display:flex;flex-direction:column;gap:18px}
 .wrap{max-width:1320px;margin:0 auto;padding-inline:16px;padding-block:20px 40px;display:flex;flex-direction:column;gap:18px}
 header{display:flex;flex-wrap:wrap;gap:12px;align-items:flex-end;justify-content:space-between}
 h1{font-family:var(--display);font-weight:800;font-size:24px;margin:0;letter-spacing:-.01em}
@@ -32,11 +38,17 @@ h3{font-size:11px;text-transform:uppercase;letter-spacing:.08em;color:var(--mute
 .pill{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:99px;white-space:nowrap}
 .p-crit{background:var(--crit-bg);color:var(--crit)}.p-warn{background:var(--warn-bg);color:var(--warn)}
 .p-ok{background:var(--ok-bg);color:var(--ok)}.p-cold{background:var(--cold-bg);color:var(--cold)}.p-n{background:var(--soft);color:var(--muted)}
-.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
-.kpi{background:var(--panel);padding:12px 16px;min-width:0}
-.kpi b{font-family:var(--display);font-size:24px;font-weight:700;display:block;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.kpis,.tiles{display:grid;gap:1px;background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+.kpis{grid-template-columns:repeat(6,1fr)}
+.tiles{grid-template-columns:repeat(auto-fit,minmax(150px,1fr));border-radius:8px}
+.kpi,.tile{background:var(--panel);padding:12px 16px;min-width:0}
+.kpi b,.tile b{font-family:var(--body);font-size:24px;font-weight:600;display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tile b{font-size:20px}
 .kpi b.hot{color:var(--crit)}
-.kpi small{color:var(--muted);font-size:12px}
+.kpi small,.tile small{color:var(--muted);font-size:12px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid var(--line);overflow-x:auto}
+.tabs button{font:inherit;font-weight:600;background:none;border:0;border-bottom:2px solid transparent;padding:8px 14px;color:var(--muted);cursor:pointer;white-space:nowrap}
+.tabs button[aria-selected="true"]{color:var(--ink);border-bottom-color:var(--accent)}
 .grid{display:grid;grid-template-columns:minmax(0,1.1fr) minmax(0,1fr);gap:18px;align-items:start}
 .col{display:flex;flex-direction:column;gap:18px;min-width:0}
 .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;min-width:0}
@@ -74,12 +86,13 @@ button.btn.sm{padding:3px 9px;font-size:12px}
 button.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--accent-ink)}
 button.btn:disabled{opacity:.45;cursor:not-allowed}
 button.btn[aria-pressed="true"]{background:var(--warn-bg);border-color:var(--warn);color:var(--warn)}
-button:focus-visible,select:focus-visible,input:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+a.btn{display:inline-block;font-weight:600;font-size:12px;border-radius:7px;padding:4px 10px;border:1px solid var(--line);color:var(--ink);text-decoration:none}
+button:focus-visible,select:focus-visible,input:focus-visible,a:focus-visible,rect.hit:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 select,input{font:inherit;font-size:13px;padding:6px 8px;border-radius:6px;border:1px solid var(--line);background:var(--panel);color:var(--ink);max-width:100%;min-width:0}
 input.v{width:96px;text-align:right}
 label.tog{display:flex;flex-direction:row;gap:6px;align-items:center;font-size:13px;color:var(--muted);text-transform:none;letter-spacing:0;font-weight:400}
 .form{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;align-items:end}
-.log{font-family:var(--mono);font-size:12px;display:flex;flex-direction:column;gap:6px;max-height:240px;overflow-y:auto}
+.log{font-family:var(--mono);font-size:12px;display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto}
 .log div{overflow-wrap:anywhere}.log span{color:var(--muted)}
 .sig{list-style:none;padding:0;gap:8px}
 .sig li{display:flex;gap:8px;align-items:baseline}
@@ -88,6 +101,21 @@ label.tog{display:flex;flex-direction:row;gap:6px;align-items:center;font-size:1
 .pb .empty{padding:0}
 .note{color:var(--muted);font-size:12px}
 .prose{white-space:pre-wrap}
+.charts{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px}
+.chart{position:relative}
+.chart svg{display:block;width:100%;height:auto;overflow:visible}
+.chart .grid-line{stroke:var(--grid);stroke-width:1}
+.chart .base{stroke:var(--line);stroke-width:1}
+.chart .ax{fill:var(--muted);font:11px var(--body);font-variant-numeric:tabular-nums}
+.chart .s1{fill:var(--series-1)}.chart .s3{fill:var(--series-3)}
+.chart .hit{fill:transparent;cursor:default}
+.chart path.on{opacity:.75}
+.tip{position:absolute;pointer-events:none;background:var(--panel);color:var(--ink);border:1px solid var(--line);border-radius:6px;padding:6px 9px;font-size:12px;box-shadow:0 4px 14px rgba(0,0,0,.14);white-space:nowrap;z-index:3}
+.tip b{display:block;font-size:13px}
+.tip span{color:var(--muted)}
+details.tv summary{cursor:pointer;color:var(--muted);font-size:12px;margin-top:6px}
+.spark{vertical-align:middle;margin-right:6px}
+.spark rect{fill:var(--deemph)}.spark rect.now{fill:var(--series-1)}
 .toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:10px 16px;border-radius:8px;max-width:calc(100vw - 32px);width:max-content;z-index:10;box-shadow:0 6px 24px rgba(0,0,0,.25)}
 .toast.bad{background:var(--crit);color:#fff}
 @media (max-width:1100px){.kpis{grid-template-columns:repeat(3,1fr)}}
@@ -109,51 +137,40 @@ label.tog{display:flex;flex-direction:row;gap:6px;align-items:center;font-size:1
 
   <div class="kpis" id="kpis"></div>
 
-  <div class="grid">
+  <div class="tabs" role="tablist" aria-label="Views">
+    <button role="tab" id="tab-ops" aria-controls="view-ops" aria-selected="true">Operations</button>
+    <button role="tab" id="tab-plan" aria-controls="view-plan" aria-selected="false">Planning</button>
+    <button role="tab" id="tab-rep" aria-controls="view-rep" aria-selected="false">Reports</button>
+  </div>
+
+  <div class="grid" id="view-ops" role="tabpanel" aria-labelledby="tab-ops">
     <div class="col">
       <section class="panel">
         <div class="ph"><h2>Deficit alerts</h2>
           <div class="row"><label class="tog"><input type="checkbox" id="auto"> Auto-execute routine actions</label>
             <button class="btn sm" id="runnow">Run routine now</button></div></div>
         <div id="alerts"></div>
+        <div class="note" id="spend" style="padding:8px 16px;border-top:1px solid var(--line)"></div>
       </section>
       <section class="panel">
         <div class="ph"><h2>Prescriptive action console</h2><span class="note">Engine decides, agent explains, you approve</span></div>
         <div id="detail"></div>
       </section>
       <section class="panel">
-        <div class="ph"><h2>What-if transfer check</h2><span class="note">Runs every guardrail, moves nothing</span></div>
-        <div class="pb">
-          <form class="form" id="wif">
-            <label><span data-l="item">Item</span><select id="wi"></select></label>
-            <label>From<select id="wf"></select></label>
-            <label>To<select id="wt"></select></label>
-            <label>Units (optional)<input id="wq" type="number" min="1" inputmode="numeric"></label>
-            <button class="btn primary">Check</button>
-          </form>
-          <div id="wres"></div>
-        </div>
-      </section>
-      <section class="panel">
         <div class="ph"><h2>Ask the tower</h2><span class="note">Answers from live stock, guardrails and SOPs</span></div>
         <div class="pb">
-          <form class="row" id="askf"><input id="q" style="flex:1" placeholder="e.g. Can insulin move from North to East?" aria-label="Question"><button class="btn primary">Ask</button></form>
+          <form class="row" id="askf"><input id="q" style="flex:1" placeholder="e.g. Which shipments are late?" aria-label="Question"><button class="btn primary">Ask</button></form>
           <div id="ans" hidden></div>
         </div>
       </section>
-      <section class="panel">
-        <div class="ph"><h2>Shift briefing</h2><button class="btn sm" id="brief">Write briefing</button></div>
-        <div class="pb"><div id="brieft" class="prose note">A handover summary of risks, actions and approvals.</div></div>
-      </section>
     </div>
-
     <div class="col">
       <section class="panel">
-        <div class="ph"><h2>Network inventory</h2><select id="sku" aria-label="Item"></select></div>
-        <div class="tw" id="net"></div>
+        <div class="ph"><h2>In transit</h2><span class="note">Late shipments stop counting as cover and are re-planned</span></div>
+        <div class="tw" id="transit"></div>
       </section>
       <section class="panel">
-        <div class="ph"><h2>Signals</h2><span class="note">Spikes, shortages, overstock, expiry risk</span></div>
+        <div class="ph"><h2>Signals</h2><span class="note">Late, calendar, suppliers, spikes, shortages, expiry</span></div>
         <div class="pb" id="signals"></div>
       </section>
       <section class="panel">
@@ -177,18 +194,78 @@ label.tog{display:flex;flex-direction:row;gap:6px;align-items:center;font-size:1
           <div class="note">Switch a scenario on and the tower re-plans every open deficit against it.</div></div>
       </section>
       <section class="panel">
-        <div class="ph"><h2>In transit</h2><span class="note">Receive to book stock; logger alarms quarantine it</span></div>
-        <div class="tw" id="transit"></div>
+        <div class="ph"><h2>Activity log</h2></div>
+        <div class="pb"><div class="log" id="log"></div></div>
+      </section>
+    </div>
+  </div>
+
+  <div class="grid" id="view-plan" role="tabpanel" aria-labelledby="tab-plan" hidden>
+    <div class="col">
+      <section class="panel">
+        <div class="ph"><h2>Network inventory</h2><select id="sku" aria-label="Item"></select></div>
+        <div class="tw" id="net"></div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>Demand calendar</h2><span class="note">Seasons, holidays and promotions lift the forecast</span></div>
+        <div class="tw" id="cal"></div>
+        <div class="pb" style="border-top:1px solid var(--line)">
+          <form class="form" id="calf">
+            <label>Name<input id="ce-name" required placeholder="e.g. Back-to-school promotion"></label>
+            <label>Kind<select id="ce-kind"><option>promotion</option><option>holiday</option><option>season</option><option>event</option></select></label>
+            <label>Starts<input id="ce-start" type="date" required></label>
+            <label>Ends<input id="ce-end" type="date" required></label>
+            <label>Demand ×<input id="ce-factor" type="number" step="0.05" min="0.1" max="10" value="1.5" required></label>
+            <label><span data-l="items">Items</span><select id="ce-scope"></select></label>
+            <label><span data-l="site">Site</span><select id="ce-site"></select></label>
+            <button class="btn primary">Add to calendar</button>
+          </form>
+        </div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>Load sharing</h2><span class="note">Pending transfers that can travel on one truck</span></div>
+        <div class="tw" id="loads"></div>
+      </section>
+    </div>
+    <div class="col">
+      <section class="panel">
+        <div class="ph"><h2>Supplier scorecards</h2><span class="note">Learned from receipts; low scores block a supplier</span></div>
+        <div class="tw" id="cards"></div>
+      </section>
+      <section class="panel">
+        <div class="ph"><h2>What-if transfer check</h2><span class="note">Runs every guardrail, moves nothing</span></div>
+        <div class="pb">
+          <form class="form" id="wif">
+            <label><span data-l="item">Item</span><select id="wi"></select></label>
+            <label>From<select id="wf"></select></label>
+            <label>To<select id="wt"></select></label>
+            <label>Units (optional)<input id="wq" type="number" min="1" inputmode="numeric"></label>
+            <button class="btn primary">Check</button>
+          </form>
+          <div id="wres"></div>
+        </div>
       </section>
       <section class="panel">
         <div class="ph"><h2>Guardrail policy</h2><span class="note">Changes need an authorised role</span></div>
         <div class="tw" id="policy"></div>
       </section>
-      <section class="panel">
-        <div class="ph"><h2>Activity log</h2></div>
-        <div class="pb"><div class="log" id="log"></div></div>
-      </section>
     </div>
+  </div>
+
+  <div class="stack" id="view-rep" role="tabpanel" aria-labelledby="tab-rep" hidden>
+    <section class="panel">
+      <div class="ph"><h2>Reports and trends</h2>
+        <div class="row">
+          <label class="tog">Period <select id="days" aria-label="Report period"><option value="30">Last 30 days</option><option value="90" selected>Last 90 days</option><option value="180">Last 180 days</option></select></label>
+          <a class="btn" id="x-pdf" href="#">PDF report</a><a class="btn" id="x-daily" href="#">Daily CSV</a>
+          <a class="btn" id="x-sup" href="#">Suppliers CSV</a><a class="btn" id="x-act" href="#">Actions CSV</a>
+        </div></div>
+      <div class="pb" id="report"><div class="note">Loading report…</div></div>
+    </section>
+    <section class="panel">
+      <div class="ph"><h2>Shift briefing</h2><button class="btn sm" id="brief">Write briefing</button></div>
+      <div class="pb"><div id="brieft" class="prose note">A handover summary of risks, actions and approvals.</div></div>
+    </section>
   </div>
   <div class="note">Quantities, compliance checks and approvals come from the planning engine and guardrails; the language model explains plans and answers questions but cannot move stock.</div>
 </div>
@@ -197,12 +274,13 @@ label.tog{display:flex;flex-direction:row;gap:6px;align-items:center;font-size:1
 <script>
 const $ = id => document.getElementById(id);
 const fmt = n => n == null ? '–' : Math.round(n).toLocaleString('en-US');
+const compact = v => { const a = Math.abs(v); return a >= 1e6 ? +(v / 1e6).toFixed(1) + 'M' : a >= 1e3 ? +(v / 1e3).toFixed(1) + 'K' : fmt(v); };
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
 const dur = h => h < 48 ? `${h} h` : `${Math.round(h / 24)} d`;
 const pill = (cls, text) => `<span class="pill ${cls}">${esc(text)}</span>`;
 const store = {get: k => { try { return localStorage.getItem(k); } catch { return null; } },
                set: (k, v) => { try { localStorage.setItem(k, v); } catch {} }};
-let state = null, sel = null, role = null;
+let state = null, sel = null, role = null, tab = 'ops';
 
 async function api(path, method = 'GET', body) {
   const r = await fetch('/api' + path, {method, headers: {'Content-Type': 'application/json'}, body: body ? JSON.stringify(body) : undefined});
@@ -225,8 +303,19 @@ async function act(path, body, done, method = 'POST') {
 }
 
 const labels = () => state.domain.labels;
+const cur = () => state.domain.currency;
 const roleName = r => state.domain.roles[r] || r;
 const canSign = roles => !roles || !roles.length || roles.includes(role);
+
+function showTab(name) {
+  tab = name;
+  for (const [t, v] of [['ops', 'view-ops'], ['plan', 'view-plan'], ['rep', 'view-rep']]) {
+    $('tab-' + t).setAttribute('aria-selected', t === name);
+    $(v).hidden = t !== name;
+  }
+  try { history.replaceState(null, '', '#' + name); } catch {}
+  if (name === 'rep' && state) renderReport();
+}
 
 async function refresh() {
   if ($('auto').checked) await api('/auto-run', 'POST').catch(e => toast(e.message, true));
@@ -242,22 +331,24 @@ async function refresh() {
   document.querySelectorAll('[data-l]').forEach(el => { el.textContent = L[el.dataset.l]; });
   const ids = state.items.map(i => i.id);
   if (!ids.includes($('sku').value)) $('sku').innerHTML = state.items.map(i => `<option value="${esc(i.id)}">${esc(i.name)}</option>`).join('');
-  if (!ids.includes($('wi').value)) fillWhatIf();
+  if (!ids.includes($('wi').value)) fillForms();
   const al = state.alerts, id = a => a.sku + '|' + a.site;
   if (!al.find(a => id(a) === sel)) sel = al[0] ? id(al[0]) : null;
-  renderKpis(); renderAlerts(); renderSignals(); renderWaste(); renderHeld(); renderScenarios(); renderTransit(); renderPolicy();
+  renderKpis(); renderAlerts(); renderSignals(); renderWaste(); renderHeld(); renderScenarios(); renderTransit();
+  renderPolicy(); renderCalendar(); renderLoads(); renderCards();
   $('log').innerHTML = state.log.map(l => `<div><span>${esc(l.ts.slice(11))}</span> ${esc(l.msg)}</div>`).join('');
-  await Promise.all([renderNet(), renderDetail()]);
+  await Promise.all([renderNet(), renderDetail(), tab === 'rep' ? renderReport() : null]);
 }
 
 function renderKpis() {
-  const k = state.kpis, cur = state.domain.currency;
+  const k = state.kpis;
   $('kpis').innerHTML = [
     [k.open_deficits, 'Open deficits', false], [k.stockout_risks, 'Stockout risks', k.stockout_risks > 0],
-    [k.need_signoff, 'Need sign-off', false], [`${cur} ${fmt(k.waste_value)}`, 'Projected expiry waste', k.waste_value > 0],
+    [k.need_signoff, 'Need sign-off', false], [k.late_shipments, 'Late shipments', k.late_shipments > 0],
+    [`${cur()} ${compact(k.waste_value)}`, 'Projected expiry waste', k.waste_value > 0],
     [fmt(k.held_units), 'Units held in quarantine', false],
-    [k.actions_executed, `Actions executed · auto ${cur} ${fmt(k.auto_spend)} of ${fmt(k.auto_budget)} today`, false],
   ].map(([v, t, hot]) => `<div class="kpi"><b class="${hot ? 'hot' : ''}">${esc(v)}</b><small>${esc(t)}</small></div>`).join('');
+  $('spend').textContent = `${k.actions_today} actions today · auto-executed ${cur()} ${fmt(k.auto_spend)} of the ${cur()} ${fmt(k.auto_budget)} daily budget`;
 }
 
 function renderAlerts() {
@@ -266,7 +357,7 @@ function renderAlerts() {
     ${pill(a.severity === 'Critical' ? 'p-crit' : a.severity === 'High' ? 'p-warn' : 'p-n', a.severity)}
     <span class="t"><b>${esc(a.sku_name)}</b><small>${esc(a.site_name)} · short ${fmt(a.need)} · impact ${a.impact}/10${a.stockout_days != null ? ` · stock lasts ${a.stockout_days} d` : ''}</small>
       <small>${esc(a.resolution)}</small></span>
-    <span class="tags">${a.badges.map(b => pill('p-cold', b.badge)).join('')}${a.stockout_risk ? pill('p-crit', 'Stockout risk') : ''}${a.signoff.length ? pill('p-warn', 'Sign-off') : ''}</span></button>`).join('');
+    <span class="tags">${a.badges.map(b => pill('p-cold', b.badge)).join('')}${a.uplift.length ? pill('p-n', a.uplift.join(', ')) : ''}${a.late ? pill('p-warn', fmt(a.late) + ' late') : ''}${a.stockout_risk ? pill('p-crit', 'Stockout risk') : ''}${a.signoff.length ? pill('p-warn', 'Sign-off') : ''}</span></button>`).join('');
   const holds = state.holds.map(h => `<div class="row" style="padding:8px 16px;border-top:1px solid var(--line)">${pill('p-n', 'On hold')}
     <span style="flex:1">${esc(h.sku_name)} at ${esc(h.site_name)} <span class="note">by ${esc(h.by)}</span></span>
     <button class="btn sm" data-act="unhold" data-sku="${esc(h.sku)}" data-site="${esc(h.site)}">Release hold</button></div>`).join('');
@@ -277,15 +368,24 @@ async function renderNet() {
   const L = labels(), rows = (await api('/inventory/' + encodeURIComponent($('sku').value)))
     .filter(r => r.on_hand || r.in_transit || r.forecast || r.safety || r.held);  // sites that never stock it are left out
   const sum = k => rows.reduce((s, r) => s + (r[k] || 0), 0);
-  $('net').innerHTML = `<table><tr><th>${esc(L.site)}</th><th class="r">FEFO stock</th><th class="r">In transit</th><th class="r">14-day forecast</th><th class="r">Buffer</th><th class="r">Days on hand</th><th class="r">Earliest expiry</th><th class="r">Held</th><th>Status</th></tr>` +
-    rows.map(r => `<tr><td>${esc(r.site_name)}</td><td class="r num">${fmt(r.fefo_stock)}</td><td class="r num">${fmt(r.in_transit)}</td><td class="r num">${fmt(r.forecast)}</td><td class="r num">${fmt(r.safety)}</td>
-    <td class="r num">${r.days_on_hand ?? '–'}</td><td class="r num">${r.earliest_days == null ? '–' : r.earliest_days + ' d'}</td><td class="r num">${r.held ? fmt(r.held) : '–'}</td>
+  const buffer = r => r.safety_detail.mode === 'smart'
+    ? `<span title="${esc(`${r.safety_detail.service_level}% service · demand σ ${r.safety_detail.demand_sd}/day · lead ${r.safety_detail.lead_days} d (σ ${r.safety_detail.lead_sd} d) · fixed was ${r.safety_detail.fixed}`)}">${fmt(r.safety)}</span>` : fmt(r.safety);
+  $('net').innerHTML = `<table><tr><th>${esc(L.site)}</th><th class="r">FEFO stock</th><th class="r">In transit</th><th class="r">14-day forecast</th><th class="r">Smart buffer</th><th class="r">Days on hand</th><th class="r">Earliest expiry</th><th class="r">Held</th><th>Status</th></tr>` +
+    rows.map(r => `<tr><td>${esc(r.site_name)}</td><td class="r num">${fmt(r.fefo_stock)}</td><td class="r num">${fmt(r.in_transit)}${r.late ? ` <span class="note">(${fmt(r.late)} late)</span>` : ''}</td>
+    <td class="r num">${fmt(r.forecast)}${r.forecast !== r.base_forecast ? ` <span class="note" title="${esc(r.uplifts.map(u => `${u.name} ×${u.factor}`).join(', ') || 'Disruption scenario')}">base ${fmt(r.base_forecast)}</span>` : ''}</td>
+    <td class="r num">${buffer(r)}</td><td class="r num">${r.days_on_hand ?? '–'}</td><td class="r num">${r.earliest_days == null ? '–' : r.earliest_days + ' d'}</td><td class="r num">${r.held ? fmt(r.held) : '–'}</td>
     <td>${pill(r.balance < 0 ? 'p-crit' : r.balance > 0 ? 'p-ok' : 'p-n', r.balance < 0 ? 'Deficit ' + fmt(-r.balance) : r.balance > 0 ? 'Surplus ' + fmt(r.balance) : 'Balanced')}${r.waste_units ? ' ' + pill('p-warn', fmt(r.waste_units) + ' may expire') : ''}</td></tr>`).join('') +
     `<tr class="total"><td>Network</td><td class="r num">${fmt(sum('fefo_stock'))}</td><td class="r num">${fmt(sum('in_transit'))}</td><td class="r num">${fmt(sum('forecast'))}</td><td class="r num">${fmt(sum('safety'))}</td><td></td><td></td><td class="r num">${fmt(sum('held'))}</td>
     <td>${pill(sum('balance') < 0 ? 'p-crit' : 'p-ok', sum('balance') < 0 ? 'Network short ' + fmt(-sum('balance')) : 'Network covered')}</td></tr></table>`;
 }
 
 const checkList = checks => `<ul class="checks">${checks.map(c => `<li><span class="${c.ok ? 'y' : 'x'}" aria-label="${c.ok ? 'pass' : 'fail'}">${c.ok ? '✓' : '✗'}</span><span>${esc(c.detail)}</span>${c.ref ? `<span class="ref">${esc(c.ref)}</span>` : ''}</li>`).join('')}</ul>`;
+
+function truckNote(t) {
+  if (!t || !t.trip_cost) return '';
+  return t.shares_truck ? ` · rides on a booked truck (saves ${cur()} ${fmt(t.saved)})`
+    : ` · ${t.trips} truck${t.trips > 1 ? 's' : ''} ${cur()} ${fmt(t.cost)}, ${t.fill_pct}% full`;
+}
 
 async function renderDetail() {
   const el = $('detail');
@@ -295,7 +395,7 @@ async function renderDetail() {
   try { p = await api(`/alerts/${encodeURIComponent(sku)}/${encodeURIComponent(site)}/plan`); }
   catch (e) { el.innerHTML = `<div class="empty">${esc(e.message)}</div>`; return; }
   if (sel !== mine) return;
-  const m = p.metrics, cur = p.currency, L = labels(), tl = p.timeline;
+  const m = p.metrics, c = p.currency, L = labels(), tl = p.timeline, sd = m.safety_detail;
   const actionable = p.transfers.length || p.po, allowed = canSign(p.signoff_roles);
   const timeline = [
     tl.stockout_days != null ? pill('p-n', `Stock lasts ${tl.stockout_days} d`) : '',
@@ -303,25 +403,32 @@ async function renderDetail() {
     p.po ? pill('p-n', `${p.po.kind === 'import' ? 'Import' : 'Order'} lead ${p.po.lead_days} d`) : '',
     p.stockout_risk ? pill('p-crit', tl.gap_days != null ? `Stockout risk: short by ${tl.gap_days} d` : 'Stockout risk: no source') : pill('p-ok', 'Covered in time'),
   ].join(' ');
+  const why = [
+    sd.mode === 'smart' ? `Buffer ${fmt(m.safety)} is smart safety stock: ${sd.service_level}% service level, demand varies ±${sd.demand_sd}/day, ${sd.lead_days} d replenishment${sd.source ? ' via ' + sd.source : ''} (spread ${sd.lead_sd} d). Fixed buffer was ${fmt(sd.fixed)}.` : `Buffer ${fmt(m.safety)} is the fixed safety stock.`,
+    m.uplifts.length ? `Forecast includes ${m.uplifts.map(u => `${u.name} ×${u.factor} for ${u.days} d from day ${u.from_day}`).join('; ')} (base ${fmt(m.base_forecast)}).` : '',
+    ...p.late_shipments.map(s => `${s.ref} from ${s.source}: ${fmt(s.qty)} units ${s.late_days} d late${s.excluded ? ', not counted as cover' : ''}.`),
+  ].filter(Boolean);
   const sourcing = p.sourcing.length && (p.po || p.unmet) ? `<div class="step"><h3>Step 2 · Supplier comparison</h3><div class="tw"><table>
-    <tr><th>Supplier</th><th>Origin</th><th class="r">Lead</th><th class="r">Landed / unit</th><th class="r">Compliance</th><th>Result</th></tr>
-    ${p.sourcing.map(o => `<tr><td class="long">${esc(o.supplier)}</td><td class="long">${esc(o.country_name)}${o.import ? ' · ' + esc(o.incoterm) : ''}</td>
-      <td class="r num">${o.lead_days} d${o.customs_days ? ` <span class="note">(${o.customs_days} customs)</span>` : ''}</td>
-      <td class="r num">${esc(cur)} ${o.unit_cost.toFixed(2)} <span class="note">${o.premium_pct > 0 ? '+' : ''}${o.premium_pct}%</span></td><td class="r num">${o.compliance}%</td>
+    <tr><th>Supplier</th><th class="r">Lead</th><th class="r">Landed / unit</th><th class="r">Score</th><th>Result</th></tr>
+    ${p.sourcing.map(o => `<tr><td class="long">${esc(o.supplier)}<div class="note">${esc(o.country_name)}${o.import ? ' · ' + esc(o.incoterm) : ''}</div></td>
+      <td class="r num">${o.lead_days} d${o.customs_days ? `<div class="note">${o.customs_days} d customs</div>` : ''}</td>
+      <td class="r num">${esc(c)} ${o.unit_cost.toFixed(2)}<div class="note">${o.premium_pct > 0 ? '+' : ''}${o.premium_pct}% vs list</div></td>
+      <td class="r num">${o.compliance}%${o.otif_pct == null ? '' : `<div class="note">OTIF ${o.otif_pct}%</div>`}</td>
       <td class="long">${o.selected ? pill('p-ok', 'Selected') : o.ok ? esc(o.note) : pill('p-crit', o.note)}</td></tr>`).join('')}</table></div></div>` : '';
   const tickets = p.transfers.map(t => `<div class="ticket"><b>Transfer · ${fmt(t.qty)} units</b>
-      <span>${esc(t.from_name)} → ${esc(p.site_name)}, ETA ${dur(t.hours)}${t.cross_border ? ', cross-border' : ''}</span>
-      <span class="note">${esc(L.lot)}s: ${t.lines.map(l => `${esc(l.lot_no)} × ${fmt(l.qty)}${l.expiry ? ' (exp ' + esc(l.expiry) + ')' : ''}`).join(', ')}</span></div>`).join('') +
+      <span>${esc(t.from_name)} → ${esc(p.site_name)}, ETA ${dur(t.hours)}${t.cross_border ? ', cross-border' : ''}${esc(truckNote(t.transport))}</span>
+      <span class="note">${esc(L.lot)}s: ${t.lines.map(l => `${esc(l.lot_no)} × ${fmt(l.qty)}${l.expiry ? ' (exp ' + esc(l.expiry) + ')' : ''}`).join(', ')}${t.rescued ? ` · rescues ${fmt(t.rescued)} units from expiry` : ''}</span></div>`).join('') +
     (p.po ? `<div class="ticket"><b>${p.po.kind === 'import' ? 'Import order' : 'Purchase order'} · ${fmt(p.po.qty)} units</b>
-      <span>${esc(p.po.supplier)} · lead ${p.po.lead_days} d${p.po.kind === 'import' ? ` incl. ${p.po.customs_days} d customs · ${esc(p.po.incoterm)} · duty ${p.po.duty_pct}%` : ''} · ${esc(cur)} ${fmt(p.po.value)}</span>
+      <span>${esc(p.po.supplier)} · lead ${p.po.lead_days} d${p.po.kind === 'import' ? ` incl. ${p.po.customs_days} d customs · ${esc(p.po.incoterm)} · duty ${p.po.duty_pct}%` : ''} · ${esc(c)} ${fmt(p.po.value)}</span>
       <span class="note">Why: ${esc(p.po.why)}</span></div>` : '') +
     (p.unmet ? `<div class="ticket bad"><b>Escalate · ${fmt(p.unmet)} units</b><span>No compliant transfer or supplier. Review alternatives, expedite open orders or qualify a source.</span></div>` : '');
   const alts = p.alternatives.length ? `<div class="step"><h3>Alternatives to review</h3><ul>${p.alternatives.map(a => `<li><b>${esc(a.name)}</b>: ${a.at_site ? fmt(a.at_site) + ' in stock here. ' : ''}${a.sources.map(s => `${esc(s.site_name)} can spare ${fmt(s.spare)}${s.ok ? '' : ' (blocked: ' + esc(s.blocked_by) + ')'}`).join('; ') || 'none spare in the network'}. <span class="note">${esc(a.note)}</span></li>`).join('')}</ul></div>` : '';
   const needs = p.signoff_roles.map(roleName).join(' or ');
   el.innerHTML = `<div class="pb">
    <div><h2>${esc(p.sku_name)} at ${esc(p.site_name)}</h2><div class="note">${esc(p.severity)} · Phase 1 · deficit identified · ${esc(L.item.toLowerCase())} category ${esc(p.category)}</div></div>
-   <div class="formula">FEFO stock ${fmt(m.fefo_stock)} + in transit ${fmt(m.in_transit)} &lt; forecast ${fmt(m.forecast)} + buffer ${fmt(m.safety)} → short ${fmt(p.need)} units</div>
+   <div class="formula">FEFO stock ${fmt(m.fefo_stock)} + in transit ${fmt(m.in_transit)}${m.late ? ` − late ${fmt(m.late)}` : ''} &lt; forecast ${fmt(m.forecast)} + buffer ${fmt(m.safety)} → short ${fmt(p.need)} units</div>
    <div class="row">${timeline}</div>
+   <ul class="note">${why.map(w => `<li>${esc(w)}</li>`).join('')}</ul>
    <div class="step"><h3>Step 1 · Network audit</h3><div class="tw"><table>
      <tr><th>${esc(L.site)}</th><th class="r">Surplus</th><th class="r">Shelf life</th><th class="r">Transit</th><th>Result</th></tr>
      ${p.audit.map(x => `<tr><td>${esc(x.site_name)}</td><td class="r num">${fmt(x.surplus)}</td><td class="r num">${x.shelf_days == null ? '–' : x.shelf_days + ' d'}</td><td class="r num">${dur(x.hours)}</td>
@@ -349,9 +456,9 @@ function renderSignals() {
 }
 
 function renderWaste() {
-  const L = labels(), cur = state.domain.currency;
+  const L = labels();
   const props = state.rebalance.length ? `<table><tr><th>${esc(L.lot)}</th><th>${esc(L.item)}</th><th>Move</th><th class="r">Units</th><th class="r">Saves</th><th></th></tr>` +
-    state.rebalance.map(r => `<tr><td class="num">${esc(r.lot_no)}</td><td class="long">${esc(r.sku_name)}</td><td class="long">${esc(r.from_name)} → ${esc(r.to_name)}</td><td class="r num">${fmt(r.qty)}</td><td class="r num">${esc(cur)} ${fmt(r.value_saved)}</td>
+    state.rebalance.map(r => `<tr><td class="num">${esc(r.lot_no)}</td><td class="long">${esc(r.sku_name)}</td><td class="long">${esc(r.from_name)} → ${esc(r.to_name)}</td><td class="r num">${fmt(r.qty)}</td><td class="r num">${esc(cur())} ${fmt(r.value_saved)}</td>
       <td><button class="btn sm" data-act="rebalance" data-lot="${r.lot_id}" data-to="${esc(r.to)}" ${canSign(r.signoff_roles) ? '' : 'disabled title="Needs ' + esc(r.signoff_roles.map(roleName).join(' or ')) + '"'}>Approve</button></td></tr>`).join('') + '</table>'
     : '<div class="empty">No stock is projected to expire unsold.</div>';
   const watch = state.expiry.length ? `<table><tr><th>${esc(L.item)}</th><th>${esc(L.site)}</th><th>${esc(L.lot)}</th><th class="r">Units</th><th class="r">Expires in</th><th>Rule</th></tr>` +
@@ -362,10 +469,10 @@ function renderWaste() {
 }
 
 function renderHeld() {
-  const L = labels(), cur = state.domain.currency;
+  const L = labels();
   $('held').innerHTML = state.quarantine.length ? `<table><tr><th>${esc(L.lot)}</th><th>${esc(L.item)}</th><th>${esc(L.site)}</th><th class="r">Units</th><th>Status</th><th></th></tr>` +
     state.quarantine.map(q => `<tr><td class="num">${esc(q.lot_no)}</td><td>${esc(q.sku_name)}</td><td>${esc(q.site_name)}</td><td class="r num">${fmt(q.qty)}</td>
-      <td class="long">${pill(q.status === 'quarantined' ? 'p-warn' : 'p-crit', q.status)} <span class="note">${esc(q.note)} · ${esc(cur)} ${fmt(q.value)}</span></td>
+      <td class="long">${pill(q.status === 'quarantined' ? 'p-warn' : 'p-crit', q.status)} <span class="note">${esc(q.note)} · ${esc(cur())} ${fmt(q.value)}</span></td>
       <td><div class="row">${q.status === 'quarantined' ? `<button class="btn sm" data-act="release" data-lot="${q.lot_id}">Release</button>` : ''}
         <button class="btn sm" data-act="dispose" data-method="destroy" data-lot="${q.lot_id}">Destroy</button><button class="btn sm" data-act="dispose" data-method="return" data-lot="${q.lot_id}">Return</button></div></td></tr>`).join('') + '</table>'
     : '<div class="empty">Nothing held in quarantine.</div>';
@@ -376,10 +483,12 @@ function renderScenarios() {
 }
 
 function renderTransit() {
-  $('transit').innerHTML = state.open_actions.length ? `<table><tr><th>No.</th><th>${esc(labels().item)}</th><th>From</th><th>To</th><th class="r">Units</th><th>ETA</th><th></th></tr>` +
-    state.open_actions.map(a => `<tr><td class="num">${esc(a.ref)}</td><td>${esc(a.sku_name)}${a.recalled ? ' ' + pill('p-crit', fmt(a.recalled) + ' recalled') : ''}${a.purpose === 'rebalance' ? ' ' + pill('p-n', 'rebalance') : ''}</td>
-      <td>${esc(a.from_name)}</td><td>${esc(a.to_name)}</td><td class="r num">${fmt(a.qty)}</td><td class="num">${esc((a.eta || '').replace('T', ' '))}</td>
-      <td><div class="row"><button class="btn sm" data-act="receive" data-id="${a.id}">Received</button>${a.temp ? `<button class="btn sm" data-act="excursion" data-id="${a.id}" data-hi="${a.temp[1]}" title="Simulate a logger alarm above ${a.temp[1]} °C for 90 minutes">Logger alarm</button>` : ''}</div></td></tr>`).join('') + '</table>'
+  $('transit').innerHTML = state.open_actions.length ? `<table><tr><th>No.</th><th>${esc(labels().item)} and route</th><th class="r">Units</th><th>ETA</th><th></th></tr>` +
+    state.open_actions.map(a => `<tr><td class="num">${esc(a.ref)}</td>
+      <td class="long">${esc(a.sku_name)}${a.recalled ? ' ' + pill('p-crit', fmt(a.recalled) + ' recalled') : ''}${a.purpose === 'rebalance' ? ' ' + pill('p-n', 'rebalance') : ''}<div class="note">${esc(a.from_name)} → ${esc(a.to_name)}</div></td>
+      <td class="r num">${fmt(a.qty)}</td>
+      <td class="num">${esc((a.eta || '').slice(5, 16).replace('T', ' '))}${a.late_days > 0 ? '<div>' + pill(a.excluded ? 'p-crit' : 'p-warn', a.late_days + ' d late') + '</div>' : ''}</td>
+      <td style="white-space:nowrap"><button class="btn sm" data-act="receive" data-id="${a.id}">Receive</button> <button class="btn sm" data-act="short" data-id="${a.id}" data-qty="${a.qty}" title="Book a short delivery">Short</button>${a.temp ? ` <button class="btn sm" data-act="excursion" data-id="${a.id}" data-hi="${a.temp[1]}" title="Simulate a logger alarm above ${a.temp[1]} °C for 90 minutes">Alarm</button>` : ''}${a.can_cancel && a.late_days > 0 ? ` <button class="btn sm" data-act="cancel" data-id="${a.id}">Cancel</button>` : ''}</td></tr>`).join('') + '</table>'
     : '<div class="empty">Nothing in transit.</div>';
 }
 
@@ -390,11 +499,122 @@ function renderPolicy() {
     <td>${esc(p.unit)}</td><td><button class="btn sm" data-act="policy" data-key="${esc(p.key)}">Save</button></td></tr>`).join('') + '</table>';
 }
 
-function fillWhatIf() {
+function renderCalendar() {
+  const scope = e => e.scope.map(s => s === 'seasonal' ? 'seasonal items' : s.replace('sku:', '').replace('category:', '').replace('tag:', '#')).join(', ') || 'all items';
+  const days = e => Math.round((new Date(e.end) - new Date(e.start)) / 864e5) + 1;
+  $('cal').innerHTML = state.calendar.length ? `<table><tr><th>Event</th><th class="r">Demand</th><th>Applies to</th><th>Status</th><th></th></tr>` +
+    state.calendar.map(e => `<tr><td class="long">${esc(e.name)}<div class="note">${esc(e.kind)} · ${esc(e.start)} · ${days(e)} d</div></td>
+      <td class="r num">×${e.factor}</td><td class="long">${esc(scope(e))}${e.sites.length ? ' at ' + esc(e.sites.map(s => (state.sites.find(x => x.id === s) || {name: s}).name).join(', ')) : ''}<div class="note">${e.positions} positions</div></td>
+      <td>${e.status === 'active' ? pill('p-warn', 'Under way') : e.status === 'past' ? pill('p-n', 'Past') : pill(e.in_horizon ? 'p-warn' : 'p-n', `In ${e.starts_in} d`)}</td>
+      <td><button class="btn sm" data-act="uncal" data-id="${e.id}" aria-label="Remove ${esc(e.name)}">Remove</button></td></tr>`).join('') + '</table>'
+    : '<div class="empty">The demand calendar is empty.</div>';
+}
+
+function renderLoads() {
+  $('loads').innerHTML = state.load_plan.length ? `<table><tr><th>Lane and loads</th><th class="r">Units</th><th class="r">Trucks</th><th class="r">Cost</th><th class="r">Saved</th></tr>` +
+    state.load_plan.map(l => `<tr><td class="long">${esc(l.from_name)} → ${esc(l.to_name)}<div class="note">${l.items.map(i => `${esc(i.sku_name)} ${fmt(i.qty)}${i.source === 'rebalance' ? ' (rebalance)' : ''}`).join('; ')}</div></td>
+      <td class="r num">${fmt(l.units)}</td><td class="r num">${l.trucks ? `${l.trucks}<div class="note">${l.fill_pct}% full</div>` : '<span class="note">booked truck</span>'}</td>
+      <td class="r num">${esc(cur())} ${fmt(l.cost)}<div class="note">${esc(cur())} ${fmt(l.separate_cost)} one by one</div></td>
+      <td class="r">${l.saved ? pill('p-ok', cur() + ' ' + fmt(l.saved)) : '<span class="note">–</span>'}</td></tr>`).join('') + '</table>'
+    : '<div class="empty">No transfers pending.</div>';
+}
+
+function spark(trend) {
+  if (!trend.length) return '';
+  const w = 7, g = 2, h = 22, last = trend.length - 1;
+  const label = 'On time in full by month: ' + trend.map(t => `${t.month} ${t.otif_pct}%`).join(', ');
+  return `<svg class="spark" width="${trend.length * (w + g)}" height="${h}" role="img" aria-label="${esc(label)}">` + trend.map((t, i) => {
+    const bh = Math.max(2, h * t.otif_pct / 100);
+    return `<rect class="${i === last ? 'now' : ''}" x="${i * (w + g)}" y="${h - bh}" width="${w}" height="${bh}" rx="1.5"><title>${esc(`${t.month}: ${t.otif_pct}% of ${t.deliveries}`)}</title></rect>`;
+  }).join('') + '</svg>';
+}
+
+function renderCards() {
+  const pct = v => v == null ? '–' : v + '%';
+  $('cards').innerHTML = `<table><tr><th>Supplier</th><th>On time in full</th><th class="r">On time · in full</th><th class="r">Compliance</th></tr>` +
+    state.scorecards.map(s => `<tr><td class="long">${esc(s.supplier)}<div class="note">${s.deliveries} deliveries · avg ${s.avg_delay_days} d late</div></td>
+      <td>${spark(s.trend)}<span class="num">${pct(s.otif_pct)}</span></td>
+      <td class="r num">${pct(s.on_time_pct)} · ${pct(s.in_full_pct)}</td>
+      <td class="r"><span class="num">${s.compliance}%</span>${s.compliance < s.minimum ? ' ' + pill('p-crit', 'Blocked') : ''}${s.learned ? `<div class="note">contract ${s.contract_compliance}%</div>` : ''}</td></tr>`).join('') + '</table>';
+}
+
+function fillForms() {
   const opts = list => list.map(x => `<option value="${esc(x.id)}">${esc(x.name)}</option>`).join('');
   $('wi').innerHTML = opts(state.items); $('wf').innerHTML = opts(state.sites); $('wt').innerHTML = opts(state.sites);
   if (state.sites[1]) $('wt').value = state.sites[1].id;
   $('wres').innerHTML = '';
+  const cats = [...new Set(state.items.map(i => i.category))];
+  $('ce-scope').innerHTML = `<option value="">All ${esc(labels().items.toLowerCase())}</option><option value="seasonal">Seasonal ${esc(labels().items.toLowerCase())}</option>` +
+    cats.map(c => `<option value="category:${esc(c)}">Category: ${esc(c)}</option>`).join('') + state.items.map(i => `<option value="sku:${esc(i.id)}">${esc(i.name)}</option>`).join('');
+  $('ce-site').innerHTML = `<option value="">All ${esc(labels().sites.toLowerCase())}</option>` + opts(state.sites);
+  const today = new Date().toISOString().slice(0, 10);
+  $('ce-start').value = today; $('ce-end').value = today;
+}
+
+// ---- reports: two single-series column charts (small multiples, one axis each), tooltips, table views ----
+function niceMax(v) { const p = 10 ** Math.floor(Math.log10(v)), n = v / p; return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 5 ? 5 : 10) * p; }
+
+function buckets(series, key) {
+  if (series.length <= 31) return series.map(s => [s.day, s[key]]);
+  const out = new Map();
+  for (const s of series) {
+    const d = new Date(s.day + 'T00:00:00Z'), w = new Date(d - ((d.getUTCDay() + 6) % 7) * 864e5).toISOString().slice(0, 10);
+    out.set(w, (out.get(w) || 0) + s[key]);
+  }
+  return [...out.entries()];
+}
+
+function columns(title, rows, cls, unit) {
+  const W = 560, H = 200, L = 46, R = 6, T = 8, B = 24, ph = H - T - B, pw = W - L - R;
+  const top = niceMax(Math.max(1, ...rows.map(r => r[1]))), slot = pw / Math.max(rows.length, 1), bw = Math.min(24, Math.max(2, slot - 2));
+  let svg = `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}">`;
+  for (const f of [0, 0.5, 1]) {
+    const y = T + ph - ph * f;
+    svg += `<line class="${f ? 'grid-line' : 'base'}" x1="${L}" x2="${W - R}" y1="${y}" y2="${y}"/><text class="ax" x="${L - 6}" y="${y + 4}" text-anchor="end">${compact(top * f)}</text>`;
+  }
+  rows.forEach(([, v], i) => {
+    if (v <= 0) return;
+    const x = L + i * slot + (slot - bw) / 2, h = Math.max(1, ph * v / top), r = Math.min(4, bw / 2, h), base = T + ph;
+    svg += `<path class="${cls}" data-i="${i}" d="M${x},${base}V${base - h + r}Q${x},${base - h} ${x + r},${base - h}H${x + bw - r}Q${x + bw},${base - h} ${x + bw},${base - h + r}V${base}Z"/>`;
+  });
+  rows.forEach(([d, v], i) => { svg += `<rect class="hit" data-i="${i}" x="${L + i * slot}" y="${T}" width="${slot}" height="${ph}" tabindex="0" aria-label="${esc(d)}: ${esc(unit)} ${fmt(v)}"/>`; });
+  if (rows.length) svg += `<text class="ax" x="${L}" y="${H - 6}">${esc(rows[0][0])}</text><text class="ax" x="${W - R}" y="${H - 6}" text-anchor="end">${esc(rows[rows.length - 1][0])}</text>`;
+  const table = `<details class="tv"><summary>Table view</summary><div class="tw"><table><tr><th>Period starting</th><th class="r">${esc(unit)}</th></tr>${rows.map(([d, v]) => `<tr><td class="num">${esc(d)}</td><td class="r num">${fmt(v)}</td></tr>`).join('')}</table></div></details>`;
+  return `<div><h3>${esc(title)}</h3><div class="chart">${svg}</svg><div class="tip" hidden></div></div>${table}</div>`;
+}
+
+function wireTips(root, data, unit) {
+  root.querySelectorAll('.chart').forEach((chart, k) => {
+    const tip = chart.querySelector('.tip'), svg = chart.querySelector('svg'), rows = data[k];
+    const show = e => {
+      const i = +e.target.dataset.i, [d, v] = rows[i];
+      tip.replaceChildren(Object.assign(document.createElement('b'), {textContent: `${unit} ${fmt(v)}`}), Object.assign(document.createElement('span'), {textContent: d}));
+      tip.hidden = false;
+      const box = e.target.getBoundingClientRect(), host = chart.getBoundingClientRect();
+      tip.style.left = Math.min(Math.max(box.left - host.left + box.width / 2 - tip.offsetWidth / 2, 0), host.width - tip.offsetWidth) + 'px';
+      tip.style.top = '0px';
+      svg.querySelectorAll('path').forEach(p => p.classList.toggle('on', p.dataset.i === String(i)));
+    };
+    const hide = () => { tip.hidden = true; svg.querySelectorAll('path.on').forEach(p => p.classList.remove('on')); };
+    svg.querySelectorAll('.hit').forEach(h => { h.addEventListener('pointerenter', show); h.addEventListener('focus', show); h.addEventListener('pointerleave', hide); h.addEventListener('blur', hide); });
+  });
+}
+
+async function renderReport() {
+  const days = $('days').value, el = $('report');
+  for (const [id, path] of [['x-pdf', 'report.pdf'], ['x-daily', 'daily.csv'], ['x-sup', 'suppliers.csv'], ['x-act', 'actions.csv']]) $(id).href = `/api/reports/${path}?days=${days}`;
+  let r;
+  try { r = await api('/reports?days=' + days); } catch (e) { el.innerHTML = `<div class="note">${esc(e.message)}</div>`; return; }
+  const c = r.currency, s = r.since_start, got = k => s[k] || {count: 0, units: 0, value: 0}, t = r.totals;
+  const tiles = [[got('stockout_avoided').count, 'Stockouts avoided'], [`${c} ${compact(got('waste_saved').value)}`, 'Waste prevented'],
+    [`${c} ${compact(got('transport_saved').value)}`, 'Saved by sharing trucks'], [`${c} ${compact(got('write_off').value)}`, 'Written off'],
+    [`${c} ${compact(got('spend').value)}`, 'Ordered by the tower'], [`${r.auto_share_pct}%`, `Auto-executed (${r.actions} actions)`]];
+  const unit = r.days <= 31 ? 'day' : 'week';
+  const spend = buckets(r.series, 'spend'), saved = buckets(r.series.map(x => ({day: x.day, v: x.waste_saved + x.transport_saved})), 'v');
+  el.innerHTML = `<div><h3>Since the demo started</h3><div class="tiles">${tiles.map(([v, l]) => `<div class="tile"><b>${esc(v)}</b><small>${esc(l)}</small></div>`).join('')}</div></div>
+    <div class="note">Last ${r.days} days: ${c} ${fmt(t.spend)} procurement spend (including sample delivery history), ${c} ${fmt(t.transport)} on trucks, ${fmt(t.stockouts_avoided)} stockouts avoided, ${c} ${fmt(t.waste_saved)} of waste prevented.</div>
+    <div class="charts">${columns(`Procurement spend per ${unit}`, spend, 's1', c)}${columns(`Savings per ${unit} (waste prevented + truck sharing)`, saved, 's3', c)}</div>`;
+  wireTips(el, [spend, saved], c);
 }
 
 document.addEventListener('click', e => {
@@ -407,7 +627,13 @@ document.addEventListener('click', e => {
   else if (d.act === 'release') act(`/lots/${d.lot}/release`, {role}, 'Released back to stock');
   else if (d.act === 'dispose') act(`/lots/${d.lot}/dispose`, {role, method: d.method}, d.method === 'return' ? 'Returned to supplier' : 'Destroyed and written off');
   else if (d.act === 'receive') act(`/actions/${d.id}/receive`, undefined, 'Received into stock');
+  else if (d.act === 'short') {
+    const got = prompt(`Units actually received (ordered ${d.qty}):`, Math.round(d.qty * 0.9));
+    if (got !== null && got.trim() !== '') act(`/actions/${d.id}/receive`, {qty: parseInt(got, 10)}, 'Short delivery booked; the supplier scorecard is updated');
+  }
   else if (d.act === 'excursion') act(`/actions/${d.id}/receive`, {max_temp_c: +d.hi + 1.5, excursion_minutes: 90}, 'Received with logger alarm: quarantined');
+  else if (d.act === 'cancel') act(`/actions/${d.id}/cancel`, {role}, 'Order cancelled; the shortfall is re-planned');
+  else if (d.act === 'uncal') act(`/calendar/${d.id}?role=${encodeURIComponent(role)}`, undefined, 'Removed from the calendar', 'DELETE');
   else if (d.act === 'scenario') act('/scenarios/' + encodeURIComponent(d.key));
   else if (d.act === 'policy') {
     const v = parseFloat($('pol-' + d.key).value);
@@ -416,6 +642,8 @@ document.addEventListener('click', e => {
   }
 });
 
+for (const t of ['ops', 'plan', 'rep']) $('tab-' + t).onclick = () => showTab(t);
+$('days').onchange = renderReport;
 $('sku').onchange = renderNet;
 $('auto').onchange = refresh;
 $('runnow').onclick = async () => {
@@ -435,8 +663,16 @@ $('wif').onsubmit = async e => {
   if ($('wf').value === $('wt').value) return toast('Pick two different sites', true);
   try {
     const r = await api('/check-transfer', 'POST', {sku: $('wi').value, from_site: $('wf').value, to_site: $('wt').value, qty: parseInt($('wq').value, 10) || null});
-    $('wres').innerHTML = `<div class="row">${r.allowed ? pill('p-ok', `Allowed · up to ${fmt(r.max_qty)} units`) : pill('p-crit', 'Blocked')}${r.signoff.length ? ' ' + pill('p-warn', 'Sign-off: ' + r.signoff.join(', ')) : ''}</div>` + checkList(r.checks);
+    $('wres').innerHTML = `<div class="row">${r.allowed ? pill('p-ok', `Allowed · up to ${fmt(r.max_qty)} units`) : pill('p-crit', 'Blocked')}${r.signoff.length ? ' ' + pill('p-warn', 'Sign-off: ' + r.signoff.join(', ')) : ''}</div>` +
+      (r.transport ? `<div class="note">Transport${esc(truckNote(r.transport))}</div>` : '') + checkList(r.checks);
   } catch (err) { $('wres').innerHTML = `<div class="note">${esc(err.message)}</div>`; }
+};
+$('calf').onsubmit = e => {
+  e.preventDefault();
+  const scope = $('ce-scope').value, site = $('ce-site').value;
+  act('/calendar', {name: $('ce-name').value.trim(), kind: $('ce-kind').value, start: $('ce-start').value, end: $('ce-end').value,
+    factor: parseFloat($('ce-factor').value), scope: scope ? [scope] : [], sites: site ? [site] : [], role}, 'Added to the demand calendar; forecasts updated')
+    .then(r => { if (r) $('ce-name').value = ''; });
 };
 $('recallf').onsubmit = e => {
   e.preventDefault();
@@ -458,5 +694,7 @@ $('askf').onsubmit = async e => {
       r.sources.map(s => `<div class="note" style="margin-top:8px"><b>${esc(s.source)}</b> · ${esc(s.text)}</div>`).join('');
   } catch (err) { a.textContent = 'Could not get an answer: ' + err.message; }
 };
-refresh().catch(e => toast('Could not load the control tower: ' + e.message, true));
+const start = (location.hash || '').slice(1);
+if (['ops', 'plan', 'rep'].includes(start)) tab = start;
+refresh().then(() => showTab(tab)).catch(e => toast('Could not load the control tower: ' + e.message, true));
 </script></body></html>

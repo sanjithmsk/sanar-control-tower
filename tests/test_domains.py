@@ -45,8 +45,9 @@ def test_origin_restriction_blocks_supplier(lc, on):
 
 def test_no_compliant_supplier_escalates(lc):
     p = planner.plan(Network(lc), "TSH", "RUH")
-    assert p["transfers"][0]["qty"] == 50 and p["po"] is None and p["unmet"] == 550 and p["stockout_risk"]
-    assert failed(p["sourcing"][0]["checks"]) == ["COMPLIANCE"]
+    moved = sum(t["qty"] for t in p["transfers"])
+    assert moved and p["po"] is None and p["unmet"] == p["need"] - moved and p["stockout_risk"]
+    assert failed(p["sourcing"][0]["checks"]) == ["COMPLIANCE"]  # 88% contract, 33% on time in full
 
 
 def test_waste_aware_donor_choice(lc):
@@ -55,9 +56,9 @@ def test_waste_aware_donor_choice(lc):
 
 
 def test_frozen_excursion_on_receipt(lc):
-    planner.execute(lc, "CHK", "RUH", "test", "planner")
-    act = lc.execute("SELECT id FROM actions").fetchone()["id"]
-    assert planner.receive(lc, act, max_temp=-12, minutes=90)["quarantined"] == 240
+    need = planner.plan(Network(lc), "CHK", "RUH")["need"]
+    (act,) = planner.execute(lc, "CHK", "RUH", "test", "planner")
+    assert planner.receive(lc, act, max_temp=-12, minutes=90)["quarantined"] == need
 
 
 def test_dangerous_goods_never_routed_to_unlicensed_site(lc):
@@ -84,8 +85,10 @@ def test_a_new_industry_is_data_only(monkeypatch):
         })
     monkeypatch.setitem(domains.PACKS, "spares", pack)
     conn = db.connect()
-    db.reset(conn, "spares")
-    p = planner.plan(Network(conn), "BMP", "S")
-    assert p["transfers"] == [] and p["audit"][0]["blocked_by"] == "LANE_OVERSIZE"  # no oversize truck on the lane
-    assert p["po"]["supplier"] == "Bumper Works" and p["po"]["qty"] == 16
-    conn.close()
+    try:
+        db.reset(conn, "spares")
+        p = planner.plan(Network(conn), "BMP", "S")
+        assert p["transfers"] == [] and p["audit"][0]["blocked_by"] == "LANE_OVERSIZE"  # no oversize truck on the lane
+        assert p["po"]["supplier"] == "Bumper Works" and p["po"]["qty"] == p["need"]
+    finally:
+        conn.close()

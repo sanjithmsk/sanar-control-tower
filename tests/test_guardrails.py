@@ -49,7 +49,7 @@ def test_daily_auto_budget_hands_over_to_humans(c):
     c.execute("UPDATE policy SET value=5000 WHERE key='auto_daily_budget'")
     r = planner.auto_run(c)
     left = planner.alerts(Network(c))
-    assert r["executed"] < 4
+    assert r["executed"] < 6  # 6 run without the cap
     assert any("auto-execution budget" in reason for a in left for reason in a["signoff"])
 
 
@@ -77,18 +77,19 @@ def test_hazmat_needs_equipped_sites(c):
 
 
 def test_storage_capacity_limits_inbound_stock(c):
-    c.execute("UPDATE sites SET capacity=1960 WHERE id='A'")  # Central Retail holds 1,862 units: room for 98
+    c.execute("UPDATE sites SET capacity=1912 WHERE id='A'")  # Central Retail holds 1,862 units: room for 50
     p = planner.plan(Network(c), "INS", "A")
-    assert sum(t["qty"] for t in p["transfers"]) == 98
-    assert p["po"] is None and p["unmet"] == 12  # a 20-unit order would not fit either
+    assert sum(t["qty"] for t in p["transfers"]) == 50
+    assert p["po"] is None and p["unmet"] == p["need"] - 50  # an order on top would not fit either
     assert all("CAPACITY" in failed(o["checks"]) for o in p["sourcing"])
 
 
 def test_sell_through_capacity(c):
-    net = Network(c)  # North Branch sells ~5.7 oseltamivir a day and holds 120 units dated 240 days out
-    assert net.absorb("OSE", "B", 44) == 251  # what it can use of a 45-day lot after one day in transit
-    assert net.absorb("OSE", "B", 44, [(251, 44)]) == 0  # nothing more once that is planned in
-    assert net.absorb("OSE", "B", 44, [(251, 45)]) == 6  # an earlier-dated lot still fits ahead of it (FEFO)
+    net = Network(c)  # North Branch holds oseltamivir dated 240 days out; how much of a 44-day lot can it sell?
+    room = net.absorb("OSE", "B", 44)
+    assert room == int(net.cum("OSE", "B", 44))  # everything it sells in 44 days, flu season included
+    assert net.absorb("OSE", "B", 44, [(room, 44)]) == 0  # nothing more once that is planned in
+    assert net.absorb("OSE", "B", 44, [(room, 45)]) > 0  # a lot expiring earlier still sells first (FEFO)
 
 
 def test_receipt_temperature_rules(c):

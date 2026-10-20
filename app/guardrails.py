@@ -38,7 +38,17 @@ POLICY = {
     "surge_factor": (1.6, 1, 5, "×", "Demand multiplier for seasonal items during a surge", ""),
     "overstock_days": (60, 7, 730, "days", "Days on hand above which a site is flagged overstocked", "SOP-INV-05"),
     "spike_factor": (3, 1.5, 50, "×", "A day's demand above this multiple of the 28-day average is a spike", ""),
-    "forecast_recent_weight": (0.5, 0, 1, "", "Weight of the last 7 days in the demand-sensing forecast", ""),
+    "forecast_recent_weight": (0.5, 0, 1, "", "Weight of the last 7 days in the demand-sensing forecast", "POL-PL-01"),
+    "dynamic_safety_stock": (1, 0, 1, "on/off", "Safety stock from demand variability and service level (0 = fixed)",
+                             "POL-PL-01"),
+    "service_level_pct": (95, 50, 99.9, "%", "Target service level for safety stock", "POL-PL-01"),
+    "critical_service_level_pct": (99, 50, 99.9, "%", "Service level for critical items (impact 8 or more)", "POL-PL-01"),
+    "review_period_days": (1, 0, 30, "days", "Days between replenishment reviews, added to lead time", "POL-PL-01"),
+    "default_lead_days": (7, 1, 120, "days", "Lead time assumed when no compliant supplier exists", "POL-PL-01"),
+    "late_cover_hours": (24, 0, 720, "h", "Shipments this far past their ETA stop counting as cover", "POL-PL-01"),
+    "scorecard_weight": (0.3, 0, 1, "", "Weight of on-time-in-full delivery in a supplier's compliance score",
+                         "POL-PR-02"),
+    "scorecard_min_deliveries": (3, 1, 100, "", "Deliveries needed before performance changes compliance", "POL-PR-02"),
 }
 
 
@@ -147,14 +157,19 @@ def sourcing_option(net, sku, sup, dst, qty=0):
     item, site = net.items[sku], net.sites[dst]
     imported = sup["country"] != site["country"]
     customs = customs_days(net, sup["country"], site["country"])
-    lead = sup["lead_days"] + customs
+    card = net.scorecard(sup)
+    lead = sup["lead_days"] + card["expected_delay_days"] + customs
     duty = item["duty_pct"] if imported else 0
     unit = item["price"] * sup["price_mult"] * (1 + sup["freight_pct"] / 100) * (1 + duty / 100)
-    least = net.policy["min_supplier_compliance"]
+    least, score = net.policy["min_supplier_compliance"], card["compliance"]
+    basis = (f" (contract {sup['compliance']}%, on time in full {card['otif_pct']:g}% over {card['deliveries']} "
+             "deliveries)" if card["learned"] else "")
     out = [check("SUPPLIER_AVAILABLE", sup["available"] and not net.supplier_out(sup),
                  "Available" if sup["available"] and not net.supplier_out(sup) else "Reporting a shortage"),
-           check("COMPLIANCE", sup["compliance"] >= least, f"Compliance {sup['compliance']}% (minimum {least:g}%)",
-                 "POL-PR-02")]
+           check("COMPLIANCE", score >= least, f"Compliance {score:g}%{basis}, minimum {least:g}%", "POL-PR-02")]
+    if card["expected_delay_days"]:
+        out.append(check("LEAD_HISTORY", True, f"Usually {card['expected_delay_days']} d late: planned lead {lead} d",
+                         "POL-PR-02"))
     for tag in sorted(item["tags"]):
         req = net.domain.requirements.get(tag)
         need = req and (req.cap or tag)
@@ -170,7 +185,8 @@ def sourcing_option(net, sku, sup, dst, qty=0):
             "country_name": net.country_name(sup["country"]), "import": imported, "incoterm": sup["incoterm"],
             "lead_days": lead, "customs_days": customs, "duty_pct": duty, "freight_pct": sup["freight_pct"],
             "unit_cost": round(unit, 2), "premium_pct": round((unit / item["price"] - 1) * 100, 1),
-            "compliance": sup["compliance"], "checks": out, "ok": all(c["ok"] for c in out)}
+            "compliance": score, "otif_pct": card["otif_pct"] if card["deliveries"] else None,
+            "checks": out, "ok": all(c["ok"] for c in out)}
 
 
 def _reason(code, reason, roles, ref):
@@ -229,8 +245,9 @@ def authorize(net, reasons, role):
 
 
 def require_role(net, action, role):
-    """Lot and policy operations (release, dispose, recall, policy) are limited to named roles."""
-    allowed = net.domain.approvals.get(action, ())
+    """Lot, calendar and policy operations are limited to named roles (a pack without a rule for the
+    operation falls back to the roles that may change policy)."""
+    allowed = net.domain.approvals.get(action) or net.domain.approvals.get("policy", ())
     if role not in allowed:
         who = net.domain.roles.get(role, role or "unknown role")
         raise Blocked(f"{who} cannot {action}; needs " + " or ".join(net.domain.roles[r] for r in allowed))

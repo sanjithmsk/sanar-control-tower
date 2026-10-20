@@ -41,11 +41,32 @@ answered by running the transfer guardrails). Optional settings are in [.env.exa
   cover is too short to wait. Imports add customs days, freight and duty. When nothing compliant
   exists the gap is escalated and substitutes are listed.
 - **Act**: routine actions auto-execute up to a daily budget; everything else waits for the right
-  role. Guardrails and sign-off are re-checked at execution time.
-- **Operate**: receipts with temperature-logger checks, lot recalls that reach stock on the road,
-  QA release or disposal, holds, demand feed with demand-sensing forecast, editable policy.
+  role. Guardrails and sign-off are re-checked at execution time. Transfers on the same lane and day
+  share trucks, and the cost and saving are recorded.
+- **Learn**: receipts build supplier scorecards (on time, in full, delay, lead-time spread). A
+  supplier that keeps delivering late or short sees its compliance score fall and is blocked
+  automatically; its delays lengthen its planned lead time and the safety stock that depends on it.
+- **Operate**: receipts with temperature-logger checks and short deliveries, lot recalls that reach
+  stock on the road, QA release or disposal, holds, late-order cancellation, editable policy.
+- **Report**: stockouts avoided, waste prevented, procurement and transport spend, load-sharing
+  savings, write-offs and supplier performance over time, with CSV and PDF export.
 - **Explain**: Claude explains each plan, writes shift briefings and answers questions through
   read-only tools over the live network.
+
+## Planning intelligence
+
+- **Demand calendar and seasonality.** Seasons, holidays and promotions (flu season, Ramadan, Hajj,
+  a store promotion) lift demand for the items and sites they apply to. The forecast is a daily
+  curve: the baseline from the last 7 and 28 days with past events divided out, times the calendar
+  for each of the next 14 days. Stockout timing, expiry waste and sell-through read the same curve.
+- **Smart safety stock.** z(service level) × √(lead time × demand variance + demand² × lead-time
+  variance), with 99% service for critical items. Demand variance comes from history; lead time and
+  its spread come from the fastest compliant supplier's delivery record. Fixed buffers stay available.
+- **Late shipments.** Anything past its ETA raises a signal; past the late-cover window it stops
+  counting as cover, so the deficit reopens and is re-planned. Late supplier orders can be cancelled.
+- **Load sharing.** Each lane has a trip cost and a vehicle capacity. Pending transfers are grouped
+  by lane to show trucks and cost together versus one by one, and executed transfers fill trucks
+  already booked that day before opening new ones.
 
 ## Architecture
 
@@ -53,9 +74,10 @@ answered by running the transfer guardrails). Optional settings are in [.env.exa
 | --- | --- | --- |
 | Domain packs | `app/domains/` | Vocabulary, handling requirements, roles, approval rules, policy defaults and sample data per industry. |
 | Enterprise data | `app/db.py` | Industry-neutral SQLite schema (sites, items, lots, lanes, suppliers, countries, permits). Replace with ERP / WMS / TMS / POS connectors. |
-| Semantic layer | `app/semantic.py` | One snapshot of the network in a fixed number of queries; metrics, FEFO waste simulation, sell-through capacity, signals, demand-sensing forecast. |
+| Semantic layer | `app/semantic.py` | One snapshot of the network in a fixed number of queries; demand curve with calendar, smart safety stock, supplier scorecards, late shipments, truck sharing, FEFO waste simulation, sell-through capacity, signals. |
 | Guardrails | `app/guardrails.py` | Every rule as a structured check (code, pass/fail, detail, document), bounded policy thresholds, sign-off roles. |
-| Planning engine | `app/planner.py` | Alerts, network audit, sourcing, execution, receipts, recalls, quarantine, rebalancing, auto-run. |
+| Planning engine | `app/planner.py` | Alerts, network audit, sourcing, execution, receipts, recalls, quarantine, rebalancing, load plan, calendar, auto-run, recorded outcomes and reports. |
+| Reports | `app/reports_pdf.py` | PDF report (fpdf2): savings tiles, spend and savings charts, supplier scorecards. |
 | RAG | `app/rag.py` + `knowledge/` | BM25 retrieval over `knowledge/common/` and the active pack's folder. Swap for a vector DB behind `search()`. |
 | Agent | `app/agent.py` | Claude tool-use loop with read-only tools, plan rationale, briefings, rules-engine fallback. |
 | API + console | `app/main.py`, `app/static/index.html` | REST API and the approval console. |
@@ -78,7 +100,8 @@ asserts this).
 | Temperature transit | Temperature-controlled transfers arrive within the transit limit, customs dwell included | Transfers |
 | Lane and site status | Lane exists and is open; both sites are operational | Transfers |
 | Storage capacity | Inbound stock fits the destination's free space | Transfers, sourcing |
-| Supplier compliance | Score above the minimum; required certifications held; not reporting a shortage | Sourcing |
+| Supplier compliance | Score (contract blended with on-time-in-full once there are enough deliveries) above the minimum; required certifications held; not reporting a shortage | Sourcing |
+| Late shipments | Shipments past the late-cover window are not counted as cover | Planning |
 | Trade | Customs clearance added to lead time; duty and freight in landed cost; valid import permit for the arrival date; no restricted origin or destination | Imports, cross-border transfers |
 | Sign-off | Tag rules (e.g. controlled substances), value limit, price premium, order cover, imports and cross-border moves where the pack requires it, daily auto-execution budget; each with the roles allowed to approve | Execution |
 | Lot status | Recalled, quarantined and expired stock is never planned; recalled or expired lots can never be released | Everywhere |
@@ -106,6 +129,10 @@ FOOD = Domain(
 )
 ```
 
+Optional sample data: `volatility` (day-to-day demand variation per item), `calendar` (seasons and
+promotions), `deliveries` (supplier history for scorecards) and `late` (orders already overdue);
+lanes may add a cost per trip and a vehicle capacity.
+
 Add its documents to `knowledge/food/`. No engine changes are needed; `tests/test_domains.py` builds
 a spare-parts pack inline to prove it. Disruption scenarios are data too: `cap_outage`, `lane_closed`,
 `site_down`, `primary_supplier_out`, `demand_surge`, `customs_delay` and `origin_restricted`.
@@ -114,20 +141,26 @@ a spare-parts pack inline to prove it. Disruption scenarios are data too: `cap_o
 
 `app/agent.py` runs a tool-use loop on `claude-opus-5-5` (override with `ANTHROPIC_MODEL` and
 `ANTHROPIC_EFFORT`). Tools: network overview, item inventory, resolution plan, transfer what-if,
-expiry risk, lots, policy search and recent activity. Requests use prompt caching, the server-side
+expiry risk, lots, shipments, supplier scorecards, performance report, demand calendar, policy
+search and recent activity. Requests use prompt caching, the server-side
 refusal fallback, an append-only history, and a typed error chain; a failed model call falls back to
 the rules engine. Plan explanations are cached per plan, so reopening a plan costs nothing.
 
 ## Main endpoints
 
-- `GET /api/state` — KPIs, alerts, signals, expiry watch, rebalancing, quarantine, in transit, policy, log
+- `GET /api/state` — KPIs, alerts, signals, expiry watch, rebalancing, quarantine, in transit, calendar,
+  scorecards, load plan, policy, log
 - `GET /api/alerts/{sku}/{site}/plan` and `/explain` — resolution plan and rationale
 - `POST /api/alerts/{sku}/{site}/approve` | `/hold` | `/release` — decision with `{"role": ...}`
 - `POST /api/auto-run` — execute routine actions within the daily budget
 - `POST /api/check-transfer` — what-if guardrail check, moves nothing
 - `GET /api/rebalance`, `POST /api/rebalance/{lot_id}/{site}/approve` — waste prevention
-- `POST /api/actions/{id}/receive` — book goods in, with optional logger readings
+- `POST /api/actions/{id}/receive` — book goods in, with optional logger readings and received `qty`
+- `POST /api/actions/{id}/cancel` — cancel an open supplier order
 - `POST /api/recalls`, `POST /api/lots/{id}/release` | `/dispose` — recalls and quarantine
+- `GET /api/calendar`, `POST /api/calendar`, `DELETE /api/calendar/{id}` — demand calendar
+- `GET /api/scorecards`, `GET /api/load-plan` — supplier performance and truck sharing
+- `GET /api/reports?days=`, `/api/reports/{daily|suppliers|actions}.csv`, `/api/reports/report.pdf` — reports
 - `POST /api/demand` (alias `/api/sales`) — demand feed; refreshes the forecast and flags spikes
 - `GET /api/policy`, `PUT /api/policy/{key}` — guardrail thresholds
 - `POST /api/scenarios/{key}` — toggle a disruption

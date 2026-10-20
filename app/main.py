@@ -3,11 +3,11 @@ from datetime import date
 from pathlib import Path
 from typing import Literal
 
-from fastapi import Depends, FastAPI, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import AliasChoices, BaseModel, Field
 
-from . import agent, db, domains, planner
+from . import agent, db, domains, planner, reports_pdf
 from . import guardrails as G
 from .semantic import Network
 
@@ -40,7 +40,18 @@ class Receipt(BaseModel):
     min_temp_c: float | None = Field(None, ge=-100, le=100)
     max_temp_c: float | None = Field(None, ge=-100, le=100)
     excursion_minutes: int = Field(0, ge=0, le=100_000)
+    qty: int | None = Field(None, ge=0, description="Units actually received; less than ordered is a short delivery")
     by: str | None = Field(None, max_length=80)
+
+
+class EventIn(Actor):
+    name: str = Field(min_length=1, max_length=80)
+    kind: str = "promotion"
+    start: date
+    end: date
+    factor: float = Field(gt=0)
+    scope: list[str] = []
+    sites: list[str] = []
 
 
 class Demand(BaseModel):
@@ -117,10 +128,11 @@ def state(c=Depends(conn)):
         "quarantine": planner.quarantine(net), "open_actions": planner.in_transit(net),
         "holds": [{"sku": s, "site": st, "sku_name": net.items[s]["name"], "site_name": net.sites[st]["name"],
                    "by": h["by"]} for (s, st), h in net.holds.items()],
-        "items": [{"id": k, "name": v["name"]} for k, v in net.items.items()],
+        "items": [{"id": k, "name": v["name"], "category": v["category"]} for k, v in net.items.items()],
         "sites": [{"id": k, "name": v["name"]} for k, v in net.sites.items()],
         "scenarios": [dict(r) for r in c.execute("SELECT key, label, active FROM scenarios")],
-        "policy": G.policy_rows(net),
+        "calendar": planner.calendar_view(net), "scorecards": planner.scorecards(net),
+        "load_plan": planner.load_plan(net, al), "policy": G.policy_rows(net),
         "log": [dict(r) for r in c.execute("SELECT ts, msg FROM events ORDER BY id DESC LIMIT 60")],
     }
 
@@ -217,10 +229,68 @@ def approve_rebalance(lot_id: int, site: str, body: Approval, c=Depends(conn)):
 @app.post("/api/actions/{action_id}/receive")
 def receive(action_id: int, body: Receipt | None = None, c=Depends(conn)):
     body = body or Receipt()
-    r = planner.receive(c, action_id, body.min_temp_c, body.max_temp_c, body.excursion_minutes, body.by or "receiving")
+    r = planner.receive(c, action_id, body.min_temp_c, body.max_temp_c, body.excursion_minutes, body.by or "receiving",
+                        body.qty)
     if not r:
         raise HTTPException(404, "No in-transit action with that number")
     return r
+
+
+@app.post("/api/actions/{action_id}/cancel")
+def cancel(action_id: int, body: Actor, c=Depends(conn)):
+    role, who = _who(Network(c), body)
+    planner.cancel(c, action_id, who, role)
+    return {"ok": True}
+
+
+@app.get("/api/calendar")
+def calendar(c=Depends(conn)):
+    return planner.calendar_view(Network(c))
+
+
+@app.post("/api/calendar")
+def add_event(e: EventIn, c=Depends(conn)):
+    role, who = _who(Network(c), e)
+    return {"id": planner.add_event(c, e.name, e.kind, e.start, e.end, e.factor, e.scope, e.sites, who, role)}
+
+
+@app.delete("/api/calendar/{event_id}")
+def delete_event(event_id: int, role: str | None = None, c=Depends(conn)):
+    role, who = _who(Network(c), Actor(role=role))
+    planner.delete_event(c, event_id, who, role)
+    return {"ok": True}
+
+
+@app.get("/api/scorecards")
+def scorecards(c=Depends(conn)):
+    return planner.scorecards(Network(c))
+
+
+@app.get("/api/load-plan")
+def load_plan(c=Depends(conn)):
+    net = Network(c)
+    return planner.load_plan(net, planner.alerts(net))
+
+
+@app.get("/api/reports")
+def reports(days: int = Query(90, ge=7, le=365), c=Depends(conn)):
+    return planner.report(Network(c), days)
+
+
+@app.get("/api/reports/report.pdf")
+def report_pdf(days: int = Query(90, ge=7, le=365), c=Depends(conn)):
+    net = Network(c)
+    name = f"{net.domain.name}-report-{net.today}.pdf"
+    return Response(reports_pdf.render(planner.report(net, days)), media_type="application/pdf",
+                    headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+
+@app.get("/api/reports/{which}.csv")
+def report_csv(which: str, days: int = Query(90, ge=7, le=365), c=Depends(conn)):
+    net = Network(c)
+    text = planner.report_csv(net, which, days)
+    return Response(text, media_type="text/csv",
+                    headers={"Content-Disposition": f'attachment; filename="{net.domain.name}-{which}-{net.today}.csv"'})
 
 
 @app.post("/api/recalls")

@@ -30,19 +30,23 @@ SAMPLE = {
         "ADA": {"A": ([(2, 120)], 8, 2), "B": ([(6, 200)], 5, 1), "C": ([(4, 160)], 3, 1), "D": ([(14, 270)], 4, 4)},
         "TRM": {"A": ([(70, 300)], 50, 20), "B": ([(20, 150)], 60, 20), "C": ([(55, 200)], 40, 15),
                 "D": ([(100, 365)], 60, 40)},
-        "OSE": {"A": ([(150, 220)], 100, 30), "B": ([(120, 240)], 80, 25), "C": ([(100, 200), (300, 45)], 70, 20),
+        "OSE": {"A": ([(150, 220)], 100, 30), "B": ([(120, 240)], 80, 25), "C": ([(100, 200), (400, 45)], 70, 20),
                 "D": ([(400, 300)], 150, 80)},
         "AMX": {"A": ([(420, 180), (40, -3)], 280, 60), "B": ([(80, 45), (300, 120)], 250, 50),
                 "C": ([(150, 210)], 300, 60), "D": ([(900, 330)], 300, 100)},
         "PCM": {"A": ([(900, 300)], 600, 150), "B": ([(700, 250)], 500, 120),
                 "C": ([(300, 20), (520, 280)], 400, 100), "D": ([(3000, 400)], 1000, 500)},
         "INB": {"D": ([(60, 280)], 28, 10)},
-        "GLM": {"A": ([(40, None)], 28, 8), "B": ([(20, None)], 14, 6), "C": ([(12, None)], 14, 10)},
+        "GLM": {"A": ([(40, None)], 28, 8), "B": ([(17, None)], 14, 6), "C": ([(8, None)], 14, 10)},
         "HSN": {"A": ([(200, 500)], 140, 40), "B": ([(150, 480)], 100, 30), "D": ([(600, 520)], 200, 100)},
     },
-    # a, b, mode, transit hours, capabilities of the vehicles on the lane
-    "lanes": [("A", "B", "road", 2, "cold,hazmat"), ("A", "C", "road", 3, "cold"), ("A", "D", "road", 4, "cold,hazmat"),
-              ("B", "C", "road", 3, ""), ("B", "D", "road", 5, "cold,hazmat"), ("C", "D", "road", 2, "cold")],
+    # day-to-day demand variability (coefficient of variation) used for history and safety stock
+    "volatility": {"INS": 0.3, "ADA": 0.5, "TRM": 0.35, "OSE": 0.45, "AMX": 0.3, "PCM": 0.4, "INB": 0.3, "GLM": 0.5,
+                   "HSN": 0.45},
+    # a, b, mode, transit hours, vehicle capabilities, cost per trip, units per vehicle
+    "lanes": [("A", "B", "road", 2, "cold,hazmat", 180, 600), ("A", "C", "road", 3, "cold", 220, 600),
+              ("A", "D", "road", 4, "cold,hazmat", 260, 1200), ("B", "C", "road", 3, "", 220, 600),
+              ("B", "D", "road", 5, "cold,hazmat", 300, 1200), ("C", "D", "road", 2, "cold", 180, 1200)],
     # name, country, lead days, price multiplier, freight %, compliance %, primary, certifications, categories, incoterm
     "suppliers": [
         ("Supplier A (primary)", "SA", 3, 1.0, 0, 98, 1, "cold,controlled,hazmat", "medicine,consumer", "DDP"),
@@ -54,6 +58,20 @@ SAMPLE = {
     "permits": [("SFDA-MDIP-2026-0147", "device", "SA", 300)],
     "substitutes": [("INS", "INB", "Biosimilar insulin glargine. Interchange needs pharmacist sign-off "
                                    "and prescriber notification.")],
+    # demand calendar: name, kind, starts in (days), lasts (days), demand factor, items (empty = all), sites (empty = all)
+    "calendar": [("Flu season", "season", 10, 150, 1.3, "seasonal", ""),
+               ("Hand sanitizer promotion", "promotion", 25, 7, 1.8, "sku:HSN", "A"),
+               ("Hajj season", "holiday", 210, 14, 1.4, "category:consumer,sku:PCM", "")],
+    # past supplier deliveries (oldest first): supplier, item, site, qty, days late per delivery, units short per delivery
+    "deliveries": [
+        ("Supplier A (primary)", "AMX", "C", 300, [0, 0, 0, 0, 1, 0, 0], [0] * 7),
+        ("Supplier A (primary)", "INS", "A", 120, [0, 0, 0, 0, 0, 0, 0], [0] * 7),
+        ("Supplier B (secondary)", "PCM", "B", 1000, [0, 0, 2, 0, 0, 0, 0, 0], [0, 0, 50, 0, 0, 0, 0, 0]),
+        ("Supplier C (spot wholesaler)", "AMX", "B", 200, [1, 3, 0], [0, 40, 0]),
+        ("MedTech GmbH (Germany)", "GLM", "C", 20, [0, 0, 0, 0, 0], [0] * 5),
+    ],
+    # supplier orders still open past their ETA: supplier, item, site, qty, days overdue
+    "late": [("Supplier B (secondary)", "AMX", "C", 200, 2)],
     "scenarios": {
         "cold_fail": ("Cold-chain failure on routes to Central Retail", {"type": "cap_outage", "site": "A", "cap": "cold"}),
         "supplier_short": ("Primary supplier shortage", {"type": "primary_supplier_out"}),
@@ -81,6 +99,8 @@ PHARMACY = Domain(
         "dispose": ("qa", "pharmacist", "chief_pharmacist"),
         "recall": ("qa", "chief_pharmacist"),
         "policy": ("chief_pharmacist", "logistics_manager"),
+        "calendar": ("pharmacist", "chief_pharmacist", "logistics_manager"),
+        "cancel": ("logistics_manager", "chief_pharmacist"),
     },
     requirements={
         "cold": Requirement("Cold chain 2–8 °C", "2–8 °C", site=True, lane=True, supplier=True, temp=(2, 8),

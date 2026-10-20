@@ -1,18 +1,18 @@
 """Planning engine: sense deficits, plan their resolution, execute approved actions, and run the
-lot-level operations around them (receipts, recalls, quarantine, expiry rebalancing).
+operations around them (receipts, recalls, quarantine, expiry rebalancing, load sharing, reports).
 
 Quantities and compliance are decided here, deterministically, from the semantic layer and the
 guardrails. The language model explains and answers questions; it never moves stock.
 """
+import csv
+import io
 import json
 import math
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from . import guardrails as G
 from .db import log
-from .semantic import Network, refresh_forecast
-
-REF = {"transfer": "TR", "po": "PO", "import": "IMP"}
+from .semantic import HORIZON, REF, Network, refresh_forecast
 
 
 def _now():
@@ -38,16 +38,24 @@ def _badges(net, item):
             for t in sorted(item["tags"]) if (r := net.domain.requirements.get(t)) and r.badge]
 
 
+def _outcome(conn, kind, sku, site, units, value, ref):
+    """Record what an action achieved or cost; reports are built from these."""
+    conn.execute("INSERT INTO outcomes(day,kind,sku,site,units,value,ref) VALUES (?,?,?,?,?,?,?)",
+                 (date.today().isoformat(), kind, sku, site, units, round(value, 2), ref))
+
+
 def sense(conn):
-    """Housekeeping before planning: lots past expiry are quarantined and their write-off logged."""
+    """Housekeeping before planning: lots past expiry are quarantined and their write-off recorded."""
     net = Network(conn)
     expired = [lot for lots in net.lots.values() for lot in lots
                if lot["status"] == "available" and lot["expiry"] and net.days_left(lot["expiry"]) <= 0]
     for lot in expired:
         conn.execute("UPDATE lots SET status='expired', note=? WHERE id=?", (f"Expired {lot['expiry']}", lot["id"]))
         item = net.items[lot["sku"]]
+        value = lot["qty"] * item["price"]
+        _outcome(conn, "write_off", lot["sku"], lot["site"], lot["qty"], value, lot["lot_no"])
         log(conn, f"Expired: {lot['lot_no']} {item['name']} at {net.sites[lot['site']]['name']}, {lot['qty']:,} units "
-                  f"quarantined (write-off {net.domain.currency} {lot['qty'] * item['price']:,.0f})")
+                  f"quarantined (write-off {net.domain.currency} {value:,.0f})")
     if expired:
         conn.commit()
         net = Network(conn)
@@ -87,7 +95,7 @@ def _pick(net, sku, src, dst, want, transit_days, arriving):
 
 
 def _severity(item, m, risk, unmet):
-    cov, impact = (m["fefo_stock"] + m["in_transit"]) / max(m["forecast"], 1), item["impact"]
+    cov, impact = (m["fefo_stock"] + m["in_transit"] - m["late"]) / max(m["forecast"], 1), item["impact"]
     if (cov < 0.5 and impact >= 5) or (impact >= 8 and cov < 0.8) or ((risk or unmet) and impact >= 7):
         return "Critical"
     return "High" if cov < 0.8 or risk or unmet else "Medium"
@@ -114,6 +122,13 @@ def _alternatives(net, sku, site):
     return out
 
 
+def _late_for(net, sku, site):
+    return [{"ref": f"{REF[a['kind']]}-{a['id']}", "source": a["supplier"] or net.sites[a["from_site"]]["name"],
+             "qty": a["qty"], "late_days": round(a["late_hours"] / 24, 1),
+             "excluded": a["late_hours"] > net.policy["late_cover_hours"]}
+            for a in net.open if a["sku"] == sku and a["to_site"] == site and a["late_hours"] > 0]
+
+
 def plan(net, sku, site):
     """Step 1 network audit, Step 2 guardrails, Step 3 transfers and/or a purchase order or import."""
     item, dest = net.items[sku], net.sites[site]
@@ -136,10 +151,12 @@ def plan(net, sku, site):
             if qty:
                 remaining, room = remaining - qty, room - qty
                 arriving += [(x["qty"], net.days_left(x["expiry"])) for x in lines if x["expiry"]]
+                at_risk = {w["id"]: w["unsold"] for w in net.waste(sku, src)}
                 transfers.append({"from": src, "from_name": net.sites[src]["name"], "qty": qty, "hours": hours,
                                   "value": round(qty * item["price"], 2),
                                   "cross_border": net.sites[src]["country"] != dest["country"],
-                                  "lines": lines, "checks": checks})
+                                  "rescued": sum(min(x["qty"], at_risk.get(x["lot_id"], 0)) for x in lines),
+                                  "transport": net.transport(src, site, qty), "lines": lines, "checks": checks})
                 result = f"Selected: {qty:,} units"
             else:
                 result = "Blocked: would expire before it can be used here"
@@ -150,8 +167,7 @@ def plan(net, sku, site):
                       "shelf_days": net.days_left(first["expiry"]) if first and first["expiry"] else None,
                       "ok": not failed, "blocked_by": failed[0]["code"] if failed else None, "result": result})
 
-    rate = m["forecast"] / 14
-    coverage = round((m["on_hand"] + m["in_transit"] + sum(t["qty"] for t in transfers)) / rate, 1) if rate else None
+    coverage = net.days_until(sku, site, m["on_hand"] + m["in_transit"] - m["late"] + sum(t["qty"] for t in transfers))
     qty = math.ceil(remaining / item["pack"]) * item["pack"]
     inbound = sum(t["qty"] for t in transfers) + qty
     options = [G.sourcing_option(net, sku, s, site, inbound) for s in net.suppliers
@@ -163,9 +179,10 @@ def plan(net, sku, site):
         urgent = coverage is not None and coverage < cheapest["lead_days"] + net.policy["lead_time_buffer_days"]
         best = fastest if urgent else cheapest
         po = {k: best[k] for k in ("supplier", "supplier_id", "country", "country_name", "incoterm", "lead_days",
-                                   "customs_days", "duty_pct", "freight_pct", "unit_cost", "premium_pct", "compliance")}
+                                   "customs_days", "duty_pct", "freight_pct", "unit_cost", "premium_pct", "compliance",
+                                   "otif_pct")}
         po.update(kind="import" if best["import"] else "po", qty=qty, value=round(qty * best["unit_cost"], 2),
-                  cover_days=round(qty / rate, 1) if rate else None,
+                  cover_days=net.days_until(sku, site, qty),
                   why="fastest compliant source: cover is too short to wait for the cheapest"
                       if urgent and best is not cheapest else "lowest landed cost among compliant sources")
         remaining = 0
@@ -184,6 +201,9 @@ def plan(net, sku, site):
              G.check("SHELF_LIFE", True, f"Only lots with more than {net.policy['min_shelf_days']:g} days left are "
                                          "planned or moved", "SOP-INV-02"),
              G.check("DONOR_SAFE", True, "Donors keep their own forecast and safety buffer", "SOP-INV-02")]
+    if m["late"]:
+        rules.append(G.check("LATE_SHIPMENTS", True, f"{m['late']:,} units more than "
+                             f"{net.policy['late_cover_hours']:g} h past ETA are not counted as cover", "POL-PL-01"))
     for t in transfers:
         rules += [{**c, "detail": f"{t['from_name']}: {c['detail']}"} for c in t.pop("checks")]
     if po:
@@ -194,6 +214,7 @@ def plan(net, sku, site):
         "sku": sku, "site": site, "sku_name": item["name"], "site_name": dest["name"], "category": item["category"],
         "badges": _badges(net, item), "metrics": m, "need": need, "severity": _severity(item, m, risk, unmet),
         "audit": audit, "transfers": transfers, "sourcing": options, "po": po, "unmet": unmet,
+        "late_shipments": _late_for(net, sku, site),
         "timeline": {"stockout_days": m["stockout_days"], "coverage_days": coverage,
                      "first_arrival_days": round(first_arrival, 1) if first_arrival is not None else None,
                      "po_lead_days": po["lead_days"] if po else None,
@@ -202,8 +223,9 @@ def plan(net, sku, site):
         "alternatives": _alternatives(net, sku, site) if risk or unmet else [],
         "signoff": [r["reason"] for r in reasons], "signoff_detail": reasons,
         "signoff_roles": G.allowed_roles(net, reasons) if reasons else [],
-        "value": round(sum(a["value"] for a in actions), 2), "min_shelf_days": net.policy["min_shelf_days"],
-        "currency": net.domain.currency,
+        "value": round(sum(a["value"] for a in actions), 2),
+        "transport_cost": sum(t["transport"]["cost"] for t in transfers),
+        "min_shelf_days": net.policy["min_shelf_days"], "currency": net.domain.currency,
     }
 
 
@@ -227,13 +249,14 @@ def alerts(net):
             if not p:
                 continue
             m = p["metrics"]
-            cov = (m["fefo_stock"] + m["in_transit"]) / max(m["forecast"], 1)
+            cov = (m["fefo_stock"] + m["in_transit"] - m["late"]) / max(m["forecast"], 1)
             out.append({
                 "sku": sku, "site": site, "sku_name": item["name"], "site_name": p["site_name"], "need": p["need"],
                 "severity": p["severity"], "impact": item["impact"], "badges": p["badges"],
                 "signoff": p["signoff"], "signoff_roles": p["signoff_roles"], "stockout_days": m["stockout_days"],
                 "stockout_risk": p["stockout_risk"], "unmet": p["unmet"], "resolution": resolution(p),
-                "value": p["value"],
+                "value": p["value"], "late": m["late"], "uplift": [u["name"] for u in m["uplifts"]],
+                "transfers": [{"from": t["from"], "from_name": t["from_name"], "qty": t["qty"]} for t in p["transfers"]],
                 "_score": item["impact"] * (1 - min(cov, 1)) + item["impact"] * p["stockout_risk"] + 0.5 * bool(p["unmet"]),
             })
     out.sort(key=lambda a: -a["_score"])
@@ -247,16 +270,44 @@ def _take(conn, lines):
             raise G.Rejected("Stock changed while planning; refresh and try again")
 
 
+def _book_trucks(conn, net, src, dst, qty):
+    """Put `qty` on today's trucks for the lane, filling booked trucks before opening new ones."""
+    t, left, ids = net.transport(src, dst, qty), qty, []
+    for truck in net.trucks.get((src, dst), []):
+        if (take := min(truck["capacity"] - truck["used"], left)) > 0:
+            conn.execute("UPDATE loads SET used=used+? WHERE id=?", (take, truck["id"]))
+            truck["used"] += take
+            left -= take
+            ids.append(truck["id"])
+    while left > 0:
+        take = min(left, t["vehicle_units"])
+        cur = conn.execute("INSERT INTO loads(a,b,day,capacity,used,cost) VALUES (?,?,?,?,?,?)",
+                           (src, dst, net.today.isoformat(), t["vehicle_units"], take, t["trip_cost"]))
+        net.trucks.setdefault((src, dst), []).append({"id": cur.lastrowid, "capacity": t["vehicle_units"], "used": take})
+        left -= take
+        ids.append(cur.lastrowid)
+    return t, ids
+
+
 def _ship(conn, net, sku, src, dst, qty, value, lines, approver, role, hours, purpose=None):
     eta = (datetime.now() + timedelta(hours=hours)).isoformat(timespec="minutes")
     cross = net.sites[src]["country"] != net.sites[dst]["country"]
+    t, trucks = _book_trucks(conn, net, src, dst, qty)
     cur = conn.execute(
         "INSERT INTO actions(kind,sku,from_site,to_site,qty,value,status,approved_by,role,created_at,eta,detail)"
         " VALUES ('transfer',?,?,?,?,?,'in_transit',?,?,?,?,?)",
         (sku, src, dst, qty, value, approver, role, _now(), eta,
-         json.dumps({"lines": lines, "cross_border": cross, "purpose": purpose})))
+         json.dumps({"lines": lines, "cross_border": cross, "purpose": purpose, "trucks": trucks,
+                     "transport_cost": t["cost"], "transport_saved": t["saved"]})))
     conn.execute("UPDATE positions SET in_transit=in_transit+? WHERE sku=? AND site=?", (qty, sku, dst))
-    return cur.lastrowid, cross
+    ref = f"TR-{cur.lastrowid}"
+    if t["cost"]:
+        _outcome(conn, "transport", sku, dst, qty, t["cost"], ref)
+    if t["saved"]:
+        _outcome(conn, "transport_saved", sku, dst, qty, t["saved"], ref)
+    truck = (f", shares a booked truck (saves {net.domain.currency} {t['saved']:,.0f})" if t["shares_truck"] else
+             f", {t['trips']} truck{'s' if t['trips'] > 1 else ''} {net.domain.currency} {t['cost']:,.0f}" if t["cost"] else "")
+    return cur.lastrowid, cross, truck
 
 
 def execute(conn, sku, site, approver, role, net=None):
@@ -271,11 +322,13 @@ def execute(conn, sku, site, approver, role, net=None):
     try:
         for t in p["transfers"]:
             _take(conn, t["lines"])
-            aid, cross = _ship(conn, net, sku, t["from"], site, t["qty"], t["value"], t["lines"], approver, role,
-                               t["hours"])
+            aid, cross, truck = _ship(conn, net, sku, t["from"], site, t["qty"], t["value"], t["lines"], approver,
+                                      role, t["hours"])
             ids.append(aid)
+            if t["rescued"]:
+                _outcome(conn, "waste_saved", sku, t["from"], t["rescued"], t["rescued"] * item["price"], f"TR-{aid}")
             log(conn, f"TR-{aid} {approver}: {t['qty']:,} × {item['name']}, {t['from_name']} → {p['site_name']}, "
-                      f"ETA {duration(t['hours'])}{_handling(net, item)}" + (", cross-border" if cross else ""))
+                      f"ETA {duration(t['hours'])}{_handling(net, item)}" + (", cross-border" if cross else "") + truck)
         if po := p["po"]:
             eta = (datetime.now() + timedelta(days=po["lead_days"])).isoformat(timespec="minutes")
             cur = conn.execute(
@@ -285,11 +338,16 @@ def execute(conn, sku, site, approver, role, net=None):
                  json.dumps({"lines": [], "incoterm": po["incoterm"], "country": po["country"]})))
             ids.append(cur.lastrowid)
             conn.execute("UPDATE positions SET in_transit=in_transit+? WHERE sku=? AND site=?", (po["qty"], sku, site))
-            tag = "IMP" if po["kind"] == "import" else "PO"
+            ref = f"{REF[po['kind']]}-{cur.lastrowid}"
+            _outcome(conn, "spend", sku, site, po["qty"], po["value"], ref)
             trade = (f", {po['incoterm']} from {po['country_name']}, customs {po['customs_days']} d, duty "
                      f"{po['duty_pct']:g}%" if po["kind"] == "import" else "")
-            log(conn, f"{tag}-{cur.lastrowid} {approver}: {po['qty']:,} × {item['name']} from {po['supplier']} for "
+            log(conn, f"{ref} {approver}: {po['qty']:,} × {item['name']} from {po['supplier']} for "
                       f"{p['site_name']}, lead {po['lead_days']} d{trade}, {net.domain.currency} {po['value']:,.0f}")
+        m = p["metrics"]
+        if m["stockout_days"] is not None and m["stockout_days"] <= HORIZON and not p["stockout_risk"]:
+            _outcome(conn, "stockout_avoided", sku, site, p["need"], p["need"] * item["price"],
+                     ",".join(f"#{i}" for i in ids))
         conn.commit()
     except Exception:
         conn.rollback()
@@ -317,9 +375,10 @@ def auto_run(conn):
 
 
 # ---- receipts, recalls and quarantine ---------------------------------------------------------------
-def receive(conn, action_id, min_temp=None, max_temp=None, minutes=0, by="receiving"):
+def receive(conn, action_id, min_temp=None, max_temp=None, minutes=0, by="receiving", qty=None):
     """Goods received: in-transit stock becomes lots at the destination. Recalled lots and goods with a
-    temperature excursion are booked straight into quarantine."""
+    temperature excursion go straight into quarantine. A short delivery closes the order; the receipt
+    date and quantity feed the supplier's scorecard."""
     net = Network(conn)
     a = conn.execute("SELECT * FROM actions WHERE id=? AND status='in_transit'", (action_id,)).fetchone()
     if not a:
@@ -329,25 +388,55 @@ def receive(conn, action_id, min_temp=None, max_temp=None, minutes=0, by="receiv
     lines = detail.get("lines") or [{"lot_no": f"{REF[a['kind']]}{a['id']}", "qty": a["qty"],
                                      "expiry": (net.today + timedelta(days=item["shelf_days"])).isoformat()
                                      if item["shelf_days"] else None}]
+    pending = sum(x["qty"] for x in lines if not x.get("recalled"))  # still counted as in transit
+    got = a["qty"] if qty is None else max(0, min(int(qty), a["qty"]))
     excursion = G.receipt_check(net, item, min_temp, max_temp, minutes)
-    arrived, held = 0, 0
+    left, held = got, 0
     for x in lines:
+        take = min(x["qty"], left)
+        if take <= 0:
+            break
+        left -= take
         status, note = "available", None
         if x.get("recalled") or x["lot_no"] in net.recalled:
             status, note = "recalled", "Recalled while in transit"
         elif excursion:
             status, note = "quarantined", excursion
         conn.execute("INSERT INTO lots(sku,site,lot_no,qty,expiry,status,note) VALUES (?,?,?,?,?,?,?)",
-                     (a["sku"], a["to_site"], x["lot_no"], x["qty"], x["expiry"], status, note))
-        arrived += 0 if x.get("recalled") else x["qty"]
-        held += x["qty"] if status != "available" else 0
+                     (a["sku"], a["to_site"], x["lot_no"], take, x["expiry"], status, note))
+        held += take if status != "available" else 0
     conn.execute("UPDATE positions SET in_transit=MAX(in_transit-?,0) WHERE sku=? AND site=?",
-                 (arrived, a["sku"], a["to_site"]))
-    conn.execute("UPDATE actions SET status='received' WHERE id=?", (action_id,))
-    log(conn, f"{REF[a['kind']]}-{a['id']} received at {net.sites[a['to_site']]['name']} by {by}: {a['qty']:,} units"
+                 (pending, a["sku"], a["to_site"]))
+    conn.execute("UPDATE actions SET status='received', received_at=?, received_qty=? WHERE id=?",
+                 (_now(), got, action_id))
+    late = max(0.0, (datetime.now() - datetime.fromisoformat(a["eta"])).total_seconds() / 86400)
+    log(conn, f"{REF[a['kind']]}-{a['id']} received at {net.sites[a['to_site']]['name']} by {by}: {got:,} of "
+              f"{a['qty']:,} units" + (f" (short {a['qty'] - got:,})" if got < a["qty"] else "")
+              + (f", {late:.1f} days late" if late > 0.5 else "")
               + (f"; {held:,} quarantined ({excursion or 'recalled lot'})" if held else ""))
     conn.commit()
-    return {"ok": True, "quarantined": held, "note": excursion}
+    return {"ok": True, "received": got, "short": a["qty"] - got, "late_days": round(late, 1), "quarantined": held,
+            "note": excursion}
+
+
+def cancel(conn, action_id, by, role):
+    """Cancel an open supplier order (typically a late one); the shortfall is re-planned."""
+    net = Network(conn)
+    G.require_role(net, "cancel", role)
+    a = next((x for x in net.open if x["id"] == action_id), None)
+    if not a:
+        raise G.NotFound("No open order with that number")
+    if a["kind"] == "transfer":
+        raise G.Rejected("A transfer already on the road cannot be cancelled; receive it instead")
+    conn.execute("UPDATE actions SET status='cancelled' WHERE id=?", (action_id,))
+    conn.execute("UPDATE positions SET in_transit=MAX(in_transit-?,0) WHERE sku=? AND site=?",
+                 (a["qty"], a["sku"], a["to_site"]))
+    ref = f"{REF[a['kind']]}-{a['id']}"
+    if not a["detail"].get("sample"):
+        _outcome(conn, "spend", a["sku"], a["to_site"], -a["qty"], -a["value"], ref)
+    log(conn, f"{ref} cancelled by {by}: {a['qty']:,} × {net.items[a['sku']]['name']} from {a['supplier']}"
+              + (f", {a['late_hours'] / 24:.1f} days late" if a["late_hours"] else ""))
+    conn.commit()
 
 
 def recall(conn, lot_no, reason, by, role):
@@ -401,7 +490,8 @@ def release(conn, lot_id, by, role):
 
 
 def dispose(conn, lot_id, by, role, method="destroy"):
-    """Destroy or return held stock to the supplier and record the write-off."""
+    """Destroy or return held stock to the supplier and record the write-off (expired stock was already
+    written off when it expired)."""
     net = Network(conn)
     G.require_role(net, "dispose", role)
     lot = _lot(conn, lot_id)
@@ -409,6 +499,8 @@ def dispose(conn, lot_id, by, role, method="destroy"):
         raise G.Rejected("Only quarantined, recalled or expired lots can be disposed of")
     conn.execute("UPDATE lots SET status='disposed', note=? WHERE id=?", (f"{method} by {by}", lot_id))
     value = lot["qty"] * net.items[lot["sku"]]["price"]
+    if lot["status"] != "expired":
+        _outcome(conn, "write_off", lot["sku"], lot["site"], lot["qty"], value, lot["lot_no"])
     log(conn, f"{'Returned to supplier' if method == 'return' else 'Destroyed'}: {lot['lot_no']} "
               f"{lot['qty']:,} units by {by} (write-off {net.domain.currency} {value:,.0f})")
     conn.commit()
@@ -429,8 +521,8 @@ def release_hold(conn, sku, site, by):
 def record_demand(conn, sku, site, qty, day, by="POS"):
     """Demand feed (POS, orders): store it, refresh the demand-sensing forecast, flag spikes."""
     conn.execute("INSERT INTO demand(sku,site,day,qty) VALUES (?,?,?,?)", (sku, site, day, qty))
+    f = refresh_forecast(conn, sku, site)
     net = Network(conn)
-    f = refresh_forecast(conn, sku, site, net.policy["forecast_recent_weight"])
     d = net.demand.get((sku, site), {})
     avg = (d.get("base") or 0) / 28
     spike = bool(avg and d["q0"] >= 3 and d["q0"] >= net.policy["spike_factor"] * avg)
@@ -475,6 +567,7 @@ def rebalance(net):
             out.append({"lot_id": w["id"], "lot_no": w["lot_no"], "sku": sku, "sku_name": item["name"],
                         "from": src, "from_name": net.sites[src]["name"], "to": dst, "to_name": net.sites[dst]["name"],
                         "qty": qty, "days_left": w["days"], "unsold": w["unsold"], "hours": hours, "value_saved": value,
+                        "transport": net.transport(src, dst, qty),
                         "signoff": [r["reason"] for r in reasons], "signoff_detail": reasons,
                         "signoff_roles": G.allowed_roles(net, reasons) if reasons else []})
     return sorted(out, key=lambda r: -r["value_saved"])
@@ -490,16 +583,39 @@ def execute_rebalance(conn, lot_id, dst, approver, role):
     lines = [{"lot_id": lot_id, "lot_no": lot["lot_no"], "qty": prop["qty"], "expiry": lot["expiry"]}]
     try:
         _take(conn, lines)
-        aid, _ = _ship(conn, net, prop["sku"], prop["from"], dst, prop["qty"], prop["value_saved"], lines, approver,
-                       role, prop["hours"], "rebalance")
+        aid, _, truck = _ship(conn, net, prop["sku"], prop["from"], dst, prop["qty"], prop["value_saved"], lines,
+                              approver, role, prop["hours"], "rebalance")
+        _outcome(conn, "waste_saved", prop["sku"], prop["from"], prop["qty"], prop["value_saved"], f"TR-{aid}")
         log(conn, f"TR-{aid} {approver}: rebalance {prop['qty']:,} × {prop['sku_name']} ({lot['lot_no']}) "
                   f"{prop['from_name']} → {prop['to_name']} before expiry, saves {net.domain.currency} "
-                  f"{prop['value_saved']:,.0f}")
+                  f"{prop['value_saved']:,.0f}{truck}")
         conn.commit()
     except Exception:
         conn.rollback()
         raise
     return aid
+
+
+def load_plan(net, al):
+    """Pending transfers grouped by lane: trucks and cost if they travel together versus one by one."""
+    lanes = {}
+    for a in al:
+        for t in a["transfers"]:
+            lanes.setdefault((t["from"], a["site"]), []).append({"sku_name": a["sku_name"], "qty": t["qty"],
+                                                                 "source": "deficit"})
+    for r in rebalance(net):
+        lanes.setdefault((r["from"], r["to"]), []).append({"sku_name": r["sku_name"], "qty": r["qty"],
+                                                           "source": "rebalance"})
+    out = []
+    for (src, dst), loads in lanes.items():
+        units, lane = sum(x["qty"] for x in loads), net.lane(src, dst)
+        cap, trip = lane["vehicle_units"] or units, lane["trip_cost"] or 0
+        together, separate = net.transport(src, dst, units), sum(math.ceil(x["qty"] / cap) * trip for x in loads)
+        out.append({"from": src, "from_name": net.sites[src]["name"], "to": dst, "to_name": net.sites[dst]["name"],
+                    "items": loads, "units": units, "trucks": together["trips"], "fill_pct": together["fill_pct"],
+                    "cost": together["cost"], "separate_cost": separate, "saved": separate - together["cost"],
+                    "trip_cost": trip, "vehicle_units": cap})
+    return sorted(out, key=lambda x: (-x["saved"], -x["units"]))
 
 
 # ---- read models for the console and the agent ----------------------------------------------------
@@ -523,16 +639,19 @@ def check_transfer(net, sku, src, dst, qty=None):
     reasons = G.signoff(net, item, [{"value": movable * item["price"], "cross_border": cross}]) if movable else []
     return {"sku": sku, "item": item["name"], "from": src, "from_name": a["name"], "to": dst, "to_name": b["name"],
             "allowed": ok and movable > 0, "max_qty": movable if ok else 0, "requested": qty, "checks": checks,
-            "signoff": [r["reason"] for r in reasons]}
+            "signoff": [r["reason"] for r in reasons],
+            "transport": net.transport(src, dst, movable) if net.lane(src, dst) and movable else None}
 
 
 def kpis(net, al):
     waste = sum(net.metrics(sku, site)["waste_value"] for sku, site in net.positions)
     held = sum(lot["qty"] for lots in net.lots.values() for lot in lots if lot["status"] != "available")
-    executed = net.conn.execute("SELECT COUNT(*) n FROM actions").fetchone()["n"]
+    today = net.conn.execute("SELECT COUNT(*) n FROM actions WHERE created_at>=? AND role!='history'",
+                             (net.today.isoformat(),)).fetchone()["n"]
     return {"open_deficits": len(al), "stockout_risks": sum(1 for a in al if a["stockout_risk"]),
             "need_signoff": sum(1 for a in al if a["signoff"]), "waste_value": round(waste), "held_units": held,
-            "actions_executed": executed, "auto_spend": round(net.auto_spend), "auto_budget": net.policy["auto_daily_budget"]}
+            "late_shipments": sum(1 for a in net.open if a["late_hours"] > 0), "actions_today": today,
+            "auto_spend": round(net.auto_spend), "auto_budget": net.policy["auto_daily_budget"]}
 
 
 def expiry_watch(net):
@@ -566,24 +685,164 @@ def lots_view(net, sku, site=None):
 
 def in_transit(net):
     out = []
-    for a in net.conn.execute("SELECT * FROM actions WHERE status='in_transit' ORDER BY id").fetchall():
-        item, detail = net.items[a["sku"]], json.loads(a["detail"] or "{}")
+    for a in net.open:
+        item = net.items[a["sku"]]
         temp = next((r.temp for t in sorted(item["tags"]) if (r := net.domain.requirements.get(t)) and r.temp), None)
         out.append({"id": a["id"], "kind": a["kind"], "ref": f"{REF[a['kind']]}-{a['id']}",
                     "sku": a["sku"], "sku_name": item["name"], "qty": a["qty"],
                     "from_name": net.sites[a["from_site"]]["name"] if a["from_site"] else a["supplier"],
                     "to_name": net.sites[a["to_site"]]["name"], "eta": a["eta"], "temp": temp,
-                    "purpose": detail.get("purpose"), "cross_border": detail.get("cross_border", a["kind"] == "import"),
-                    "recalled": sum(x["qty"] for x in detail.get("lines", []) if x.get("recalled"))})
+                    "late_days": round(a["late_hours"] / 24, 1),
+                    "excluded": a["late_hours"] > net.policy["late_cover_hours"],
+                    "purpose": a["detail"].get("purpose"),
+                    "cross_border": a["detail"].get("cross_border", a["kind"] == "import"),
+                    "recalled": a["recalled"], "can_cancel": a["kind"] != "transfer"})
     return out
+
+
+KINDS = ("season", "holiday", "promotion", "event")
+
+
+def calendar_view(net):
+    out = []
+    for e in net.calendar:
+        start, end = (e["first"] - net.today).days, (e["last"] - net.today).days
+        hits = [p for p in net.positions if any(x["id"] == e["id"] for x in net.events_for(*p))]
+        out.append({"id": e["id"], "name": e["name"], "kind": e["kind"], "start": e["start"], "end": e["end"],
+                    "factor": e["factor"], "scope": sorted(e["scope"]), "sites": sorted(e["sites"]),
+                    "status": "past" if end < 0 else "active" if start <= 0 else "upcoming", "starts_in": max(start, 0),
+                    "in_horizon": end >= 0 and start < HORIZON, "positions": len(hits)})
+    return out
+
+
+def add_event(conn, name, kind, start, end, factor, scope, sites, by, role):
+    """Add a season, holiday or promotion to the demand calendar; forecasts pick it up immediately."""
+    net = Network(conn)
+    G.require_role(net, "calendar", role)
+    scope, sites = [s.strip() for s in scope if s.strip()], [s.strip() for s in sites if s.strip()]
+    if kind not in KINDS:
+        raise G.Rejected(f"Kind must be one of {', '.join(KINDS)}")
+    if end < start:
+        raise G.Rejected("The event must end on or after its start")
+    if not 0.1 <= factor <= 10:
+        raise G.Rejected("Demand factor must be between 0.1 and 10")
+    categories = {i["category"] for i in net.items.values()}
+    tags = {t for i in net.items.values() for t in i["tags"]}
+    for sel in scope:
+        kind_, _, value = sel.partition(":")
+        if not ((sel == "seasonal") or (kind_ == "category" and value in categories) or
+                (kind_ == "sku" and value in net.items) or (kind_ == "tag" and value in tags)):
+            raise G.Rejected(f"Unknown item selector '{sel}' (use seasonal, category:<name>, sku:<id> or tag:<tag>)")
+    if unknown := [s for s in sites if s not in net.sites]:
+        raise G.Rejected(f"Unknown site {', '.join(unknown)}")
+    cur = conn.execute("INSERT INTO calendar(name,kind,start,end,factor,scope,sites) VALUES (?,?,?,?,?,?,?)",
+                       (name.strip(), kind, start.isoformat(), end.isoformat(), factor, ",".join(scope), ",".join(sites)))
+    log(conn, f"Calendar: {name} ({kind}) {start} to {end}, demand ×{factor:g} for {', '.join(scope) or 'all items'}"
+              + (f" at {', '.join(sites)}" if sites else "") + f", added by {by}")
+    conn.commit()
+    return cur.lastrowid
+
+
+def delete_event(conn, event_id, by, role):
+    net = Network(conn)
+    G.require_role(net, "calendar", role)
+    row = conn.execute("SELECT name FROM calendar WHERE id=?", (event_id,)).fetchone()
+    if not row:
+        raise G.NotFound("No such calendar entry")
+    conn.execute("DELETE FROM calendar WHERE id=?", (event_id,))
+    log(conn, f"Calendar: {row['name']} removed by {by}")
+    conn.commit()
+
+
+def scorecards(net):
+    """Supplier scorecards with their on-time-in-full trend by month."""
+    out = []
+    for sup in net.suppliers:
+        months = {}
+        for r in net.deliveries.get(sup["name"], []):
+            late = (datetime.fromisoformat(r["received_at"]) - datetime.fromisoformat(r["eta"])).total_seconds() / 86400
+            ok, n = months.get(r["received_at"][:7], (0, 0))
+            months[r["received_at"][:7]] = (ok + (late <= 0.5 and (r["received_qty"] or 0) >= r["qty"]), n + 1)
+        out.append({**net.scorecard(sup), "minimum": net.policy["min_supplier_compliance"],
+                    "trend": [{"month": k, "otif_pct": round(100 * ok / n, 1), "deliveries": n}
+                              for k, (ok, n) in sorted(months.items())]})
+    return out
+
+
+SERIES = ("stockouts_avoided", "units_protected", "waste_saved", "write_off", "spend", "transport", "transport_saved")
+
+
+def buckets(series, key):
+    """(day, value) pairs, summed by week (starting Monday) when the period is longer than a month."""
+    if len(series) <= 31:
+        return [(s["day"], s[key]) for s in series]
+    out = {}
+    for s in series:
+        d = date.fromisoformat(s["day"])
+        week = (d - timedelta(days=d.weekday())).isoformat()
+        out[week] = out.get(week, 0) + s[key]
+    return sorted(out.items())
+
+
+def report(net, days=90):
+    """What the tower avoided, saved and spent over the last `days`, per day and in total, with supplier
+    scorecards. Sample history loaded with the demo is flagged and left out of 'since_start'."""
+    first = net.today - timedelta(days=days - 1)
+    series = {(first + timedelta(days=i)).isoformat(): dict.fromkeys(SERIES, 0) for i in range(days)}
+    for r in net.conn.execute("SELECT day, kind, COUNT(*) n, SUM(units) u, SUM(value) v FROM outcomes WHERE day>=? "
+                              "GROUP BY day, kind", (first.isoformat(),)):
+        row = series.get(r["day"])
+        if row is None:
+            continue
+        if r["kind"] == "stockout_avoided":
+            row["stockouts_avoided"] += r["n"]
+            row["units_protected"] += r["u"]
+        elif r["kind"] in row:
+            row[r["kind"]] += r["v"]
+    since = {r["kind"]: {"count": r["n"], "units": r["u"], "value": round(r["v"], 2)} for r in net.conn.execute(
+        "SELECT kind, COUNT(*) n, SUM(units) u, SUM(value) v FROM outcomes WHERE sample=0 GROUP BY kind")}
+    roles = {r["role"]: r["n"] for r in net.conn.execute(
+        "SELECT role, COUNT(*) n FROM actions WHERE created_at>=? AND role!='history' GROUP BY role", (first.isoformat(),))}
+    actions = sum(roles.values())
+    return {"days": days, "from": first.isoformat(), "to": net.today.isoformat(), "currency": net.domain.currency,
+            "network": net.domain.title, "totals": {k: round(sum(s[k] for s in series.values()), 2) for k in SERIES},
+            "since_start": since, "actions": actions, "auto_actions": roles.get("system", 0),
+            "auto_share_pct": round(100 * roles.get("system", 0) / actions, 1) if actions else 0.0,
+            "series": [{"day": d, **{k: round(v, 2) for k, v in s.items()}} for d, s in series.items()],
+            "suppliers": scorecards(net)}
+
+
+def report_csv(net, which, days=90):
+    """CSV export: 'daily' outcomes, 'suppliers' scorecards or the 'actions' audit trail."""
+    buf, rep = io.StringIO(), report(net, days)
+    w = csv.writer(buf)
+    if which == "daily":
+        w.writerow(["day", *SERIES])
+        w.writerows([s["day"], *(s[k] for k in SERIES)] for s in rep["series"])
+    elif which == "suppliers":
+        cols = ("supplier", "country", "deliveries", "on_time_pct", "in_full_pct", "otif_pct", "avg_delay_days",
+                "lead_sd_days", "contract_compliance", "compliance", "spend")
+        w.writerow(cols)
+        w.writerows([s[k] for k in cols] for s in rep["suppliers"])
+    elif which == "actions":
+        cols = ("id", "kind", "sku", "from_site", "to_site", "supplier", "qty", "value", "status", "approved_by", "role",
+                "created_at", "eta", "received_at", "received_qty")
+        w.writerow(cols)
+        w.writerows(tuple(r) for r in net.conn.execute(
+            f"SELECT {', '.join(cols)} FROM actions WHERE created_at>=? ORDER BY id", (rep["from"],)))
+    else:
+        raise G.NotFound(f"Unknown export '{which}'")
+    return buf.getvalue()
 
 
 def briefing_facts(net):
     al = alerts(net)
     keep = ("sku_name", "site_name", "severity", "need", "resolution", "signoff", "stockout_risk", "stockout_days")
+    signals = net.signals()
     return {"network": net.domain.title, "kpis": kpis(net, al), "currency": net.domain.currency,
             "top_alerts": [{k: a[k] for k in keep} for a in al[:6]],
-            "signals": [{"title": s["title"], "detail": s["detail"]} for s in net.signals()][:10],
+            "signals": [{"kind": s["kind"], "title": s["title"], "detail": s["detail"]} for s in signals][:12],
             "rebalance": [{k: r[k] for k in ("sku_name", "from_name", "to_name", "qty", "value_saved")}
                           for r in rebalance(net)[:3]],
-            "held": [{k: q[k] for k in ("sku_name", "site_name", "lot_no", "qty", "status")} for q in quarantine(net)][:6]}
+            "held": [{k: q[k] for k in ("sku_name", "site_name", "lot_no", "qty", "status")} for q in quarantine(net)][:6],
+            "savings_since_start": report(net, 30)["since_start"]}

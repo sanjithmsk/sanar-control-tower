@@ -17,28 +17,29 @@ def test_expired_lot_is_quarantined_and_written_off(c):
 
 
 def test_recall_reaches_stock_and_shipments(c):
-    planner.execute(c, "INS", "A", "test", "pharmacist")  # 110 units of INS-B1 leave North Branch
+    need = planner.plan(Network(c), "INS", "A")["need"]
+    (act,) = planner.execute(c, "INS", "A", "test", "pharmacist")  # INS-B1 leaves North Branch
     with pytest.raises(G.Blocked):
         planner.recall(c, "INS-B1", "Manufacturer recall", "x", "pharmacist")
     assert planner.recall(c, "INS-B1", "Manufacturer recall", "QA", "qa") == {
-        "lot_no": "INS-B1", "quarantined": 50, "in_transit": 110}
+        "lot_no": "INS-B1", "quarantined": 160 - need, "in_transit": need}
     assert S.metrics(c, "INS", "A")["in_transit"] == 0  # the shipment no longer counts as cover
-    act = c.execute("SELECT id FROM actions").fetchone()["id"]
-    assert planner.receive(c, act)["quarantined"] == 110
+    assert planner.receive(c, act)["quarantined"] == need
     assert lot(c, "INS-B1")["status"] == "recalled"
-    assert {("INS", "A"), ("INS", "B")} <= {(a["sku"], a["site"]) for a in planner.alerts(Network(c))}
+    assert ("INS", "A") in {(a["sku"], a["site"]) for a in planner.alerts(Network(c))}  # re-planned at once
+    assert S.metrics(c, "INS", "B")["fefo_stock"] == 100  # only the unaffected INS-B2 still counts
 
 
 def test_excursion_quarantine_release_and_disposal(c):
-    planner.execute(c, "INS", "A", "test", "pharmacist")
-    act = c.execute("SELECT id FROM actions").fetchone()["id"]
+    need = planner.plan(Network(c), "INS", "A")["need"]
+    (act,) = planner.execute(c, "INS", "A", "test", "pharmacist")
     r = planner.receive(c, act, max_temp=9.5, minutes=45)
-    assert r["quarantined"] == 110 and "Excursion" in r["note"]
+    assert r["quarantined"] == need and "Excursion" in r["note"]
     held = c.execute("SELECT id FROM lots WHERE site='A' AND status='quarantined'").fetchone()["id"]
     with pytest.raises(G.Blocked):
         planner.release(c, held, "x", "pharmacist")
     planner.release(c, held, "QA", "qa")
-    assert S.metrics(c, "INS", "A")["fefo_stock"] == 150
+    assert S.metrics(c, "INS", "A")["fefo_stock"] == 40 + need
 
     planner.recall(c, "TRM-B1", "Tamper evidence", "QA", "qa")
     recalled = lot(c, "TRM-B1")["id"]
@@ -51,7 +52,7 @@ def test_excursion_quarantine_release_and_disposal(c):
 def test_rebalance_saves_expiring_stock(c):
     net = planner.sense(c)
     (prop,) = planner.rebalance(net)
-    assert (prop["lot_no"], prop["from"], prop["to"], prop["qty"], prop["value_saved"]) == ("OSE-C2", "C", "D", 75, 2100)
+    assert (prop["lot_no"], prop["from"], prop["to"], prop["qty"], prop["value_saved"]) == ("OSE-C2", "C", "D", 122, 3416)
     planner.execute_rebalance(c, prop["lot_id"], "D", "test", "pharmacist")
     net = Network(c)
     assert net.metrics("OSE", "C")["waste_units"] == 0 and planner.rebalance(net) == []
@@ -74,4 +75,4 @@ def test_hold_and_release(c):
 
 def test_signals(c):
     kinds = {(s["kind"], s.get("sku")) for s in planner.sense(c).signals()}
-    assert {("shortage", "ADA"), ("overstock", "OSE"), ("waste", "OSE")} <= kinds
+    assert {("shortage", "ADA"), ("overstock", "OSE"), ("waste", "OSE"), ("late", "AMX"), ("calendar", None)} <= kinds

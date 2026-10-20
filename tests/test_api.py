@@ -1,7 +1,7 @@
 def test_api_flow(api):
     state = api.get("/api/state").json()
-    assert state["kpis"]["open_deficits"] == 5 and state["domain"]["name"] == "pharmacy"
-    assert api.get("/api/alerts/AMX/C/plan").json()["need"] == 210
+    assert state["kpis"]["open_deficits"] == 7 and state["domain"]["name"] == "pharmacy"
+    assert api.get("/api/alerts/AMX/C/plan").json()["need"] == 174
     assert "rule-based" in api.get("/api/alerts/AMX/C/explain").json()["text"]
     assert api.post("/api/alerts/AMX/C/approve", json={"approver": "QA"}).status_code == 200
     assert api.post("/api/alerts/AMX/C/approve", json={}).status_code == 409
@@ -25,11 +25,12 @@ def test_api_policy(api):
 
 
 def test_api_lot_operations(api):
-    assert api.post("/api/alerts/INS/A/approve", json={}).status_code == 200
-    action = api.get("/api/state").json()["open_actions"][0]
-    assert action["ref"] == "TR-1" and action["temp"] == [2, 8]
-    r = api.post(f"/api/actions/{action['id']}/receive", json={"max_temp_c": 9.5, "excursion_minutes": 45})
-    assert r.json()["quarantined"] == 110
+    need = api.get("/api/alerts/INS/A/plan").json()["need"]
+    (aid,) = api.post("/api/alerts/INS/A/approve", json={}).json()["actions"]
+    action = next(a for a in api.get("/api/state").json()["open_actions"] if a["id"] == aid)
+    assert action["ref"] == f"TR-{aid}" and action["temp"] == [2, 8]
+    r = api.post(f"/api/actions/{aid}/receive", json={"max_temp_c": 9.5, "excursion_minutes": 45})
+    assert r.json()["quarantined"] == need
     held = next(q for q in api.get("/api/state").json()["quarantine"] if q["status"] == "quarantined")
     assert api.post(f"/api/lots/{held['lot_id']}/release", json={"role": "qa"}).status_code == 200
     assert api.post("/api/recalls", json={"lot_no": "NOPE-1", "role": "qa"}).status_code == 404

@@ -42,6 +42,17 @@ keeping a human firmly in charge of anything with clinical, financial or regulat
 - **Runs the operation around the plan.** Lot recalls that reach stock still on the road, temperature
   logger checks on receipt, QA release or disposal with write-off, automatic quarantine of expired
   stock, and rebalancing transfers that save stock before it expires.
+- **Learns from what happens.** Every receipt updates a supplier scorecard (on time, in full, delay).
+  A supplier that keeps delivering late or short loses compliance and is blocked automatically, and
+  its delays lengthen the lead time the planner assumes. Shipments that miss their ETA stop counting
+  as cover, so the gap is re-planned instead of silently waited on.
+- **Plans for what's coming.** A demand calendar (flu season, Ramadan, Hajj, promotions) shapes a
+  day-by-day forecast, and safety stock is calculated from demand variability, the target service
+  level and the supplier's real lead-time record instead of fixed numbers.
+- **Shares trucks.** Every lane has a trip cost and a vehicle capacity; transfers going the same way
+  on the same day ride together, and the saving is recorded.
+- **Reports real numbers.** Stockouts avoided, waste prevented, spend, transport cost, load-sharing
+  savings, write-offs and supplier performance over time, exportable as CSV or a PDF report.
 - **Explains itself.** Claude explains each plan, writes shift handover briefings and answers
   questions through read-only tools over the live network, citing the policy it relied on. Without
   an API key, the rules engine still answers questions such as "Can insulin move from North to
@@ -63,8 +74,12 @@ A FastAPI service with a layered architecture:
   and a sample network per industry. A handling rule is a tag on an item plus a capability on
   sites, lanes and suppliers, so "frozen", "hazmat" or "halal" are data, not code.
 - **Semantic layer.** One snapshot of the network, loaded in a fixed number of queries, from which
-  every metric is computed in memory: FEFO stock, cover, stockout timing, a FEFO waste simulation,
-  sell-through capacity, signals and a demand-sensing forecast that blends 7-day and 28-day run rates.
+  every metric is computed in memory: a daily demand curve (baseline with past events divided out,
+  times the calendar ahead), statistical safety stock, supplier scorecards, late shipments, truck
+  sharing, cover, stockout timing, a FEFO waste simulation, sell-through capacity and signals.
+- **Outcomes and reports.** Each action records what it achieved or cost (stockout avoided, waste
+  prevented, spend, transport, savings), so reports, CSV exports and the PDF come from facts, not
+  estimates.
 - **Guardrails.** Every rule returns a structured result (code, pass or fail, detail, governing
   document). Thresholds are bounded, editable by authorised roles and logged.
 - **Planning engine.** Deterministic alerts, network audit, sourcing, execution, receipts, recalls,
@@ -104,7 +119,9 @@ model.** The agent explains and answers; it cannot move stock or approve anythin
 - **Compliance you can audit**: every plan shows each guardrail, its result and its document, and the
   right role must approve.
 - **Waste prevention** that proposes rebalancing before stock expires instead of reporting it after.
-- It **runs anywhere, with or without an API key**, and ships with 56 tests.
+- **A closed learning loop**: in the demo, receiving one late, short delivery drops a supplier below
+  the compliance minimum and the tower stops ordering from it, with the reason on screen.
+- It **runs anywhere, with or without an API key**, and ships with 64 tests.
 
 ## What we learned
 
@@ -121,7 +138,8 @@ model.** The agent explains and answers; it cannot move stock or approve anythin
 
 - **Real connectors** to ERP, WMS, TMS, POS and customs systems, and a production database.
 - **More industry packs**: chilled food, automotive spare parts, chemicals and e-commerce fulfilment.
-- **A proper forecasting model** with seasonality and promotions, behind the same semantic interface.
+- **Learned forecasting**: estimate event uplifts and seasonality from history instead of entering
+  factors by hand, behind the same demand-curve interface.
 - **Authentication and audit** so roles and sign-offs are tied to real identities.
 - **Carrier and booking integration** so approved transfers and imports become real bookings.
 - **Validation** of every rule by pharmacists, QA, trade compliance and regulatory teams before any
